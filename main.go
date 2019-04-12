@@ -71,28 +71,28 @@ func main() {
 		if err != nil {
 			fmt.Printf("Could not read file chase.csv... skipping (%v)\n", err)
 		} else {
-			importer.ImportAmazonRewards("chase", chaseCsvContents)
+			check(importer.ImportAmazonRewards("chase", chaseCsvContents))
 		}
 
 		dcuCsvContents, err := ioutil.ReadFile("dcu.csv")
 		if err != nil {
 			fmt.Printf("Could not read file dcu.csv... skipping (%v)\n", err)
 		} else {
-			importer.ImportDCU("dcu", dcuCsvContents)
+			check(importer.ImportDCU("dcu", dcuCsvContents))
 		}
 
 		dcu2CsvContents, err := ioutil.ReadFile("dcu2.csv")
 		if err != nil {
 			fmt.Printf("Could not read file dcu2.csv... skipping (%v)\n", err)
 		} else {
-			importer.ImportDCU("dcu2", dcu2CsvContents)
+			check(importer.ImportDCU("dcu2", dcu2CsvContents))
 		}
 
 		dcu3CsvContents, err := ioutil.ReadFile("dcu3.csv")
 		if err != nil {
 			fmt.Printf("Could not read file dcu3.csv... skipping (%v)\n", err)
 		} else {
-			importer.ImportDCU("dcu3", dcu3CsvContents)
+			check(importer.ImportDCU("dcu3", dcu3CsvContents))
 		}
 
 		pdb.Insert(importer.All())

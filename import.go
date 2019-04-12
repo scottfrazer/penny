@@ -57,12 +57,12 @@ func (importer *TransactionImporter) ImportAmazonRewards(source string, csvFileC
 		if err != nil {
 			return err
 		}
-		amount, err := strconv.ParseFloat(record[4], 64)
+		amount, err := strconv.ParseFloat(record[5], 64)
 		if err != nil {
 			return err
 		}
 
-		importer.Add(&Transaction{source, date, record[3], amount, "", "", false})
+		importer.Add(&Transaction{source, date, record[2], amount, "", "", false})
 	}
 	return nil
 }
