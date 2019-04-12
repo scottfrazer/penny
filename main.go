@@ -12,26 +12,29 @@ import (
 )
 
 func main() {
-	log := NewLogger().ToWriter(os.Stdout)
-
 	defaultStart := time.Now().Add(-365 * 24 * time.Hour).Format("01/02/2006")
 	defaultEnd := time.Now().Format("01/02/2006")
 
 	var (
-		app                  = kingpin.New("finance", "A command-line finance manager")
-		db                   = app.Flag("db", "Path to database file").Default("penny.sqlite3.encrypted").String()
-		start                = app.Flag("start", "Start date (MM/DD/YYYY)").Default(defaultStart).String()
-		end                  = app.Flag("end", "End date (MM/DD/YYYY)").Default(defaultEnd).String()
-		categories           = app.Flag("category", "Filter by categories").String()
-		regexString          = app.Flag("regex", "Filter by regular expression").String()
-		list                 = app.Command("list", "List transactions")
-		edit                 = app.Command("edit", "Edit transactions")
-		importCmd            = app.Command("import", "Import transactions from raw CSV exports")
-		decryptCmd           = app.Command("decrypt", "Decrypt the SQLite3 database")
-		decryptCmdOutputPath = decryptCmd.Arg("outfile", "Where to write the decrypted database").Default("penny.sqlite3").String()
+		app         = kingpin.New("finance", "A command-line finance manager")
+		verbose     = app.Flag("verbose", "Verbose output").Short('v').Bool()
+		db          = app.Flag("db", "Path to database file").Default("penny.sqlite3.encrypted").String()
+		start       = app.Flag("start", "Start date (MM/DD/YYYY)").Default(defaultStart).String()
+		end         = app.Flag("end", "End date (MM/DD/YYYY)").Default(defaultEnd).String()
+		categories  = app.Flag("category", "Filter by categories").String()
+		regexString = app.Flag("regex", "Filter by regular expression").String()
+		list        = app.Command("list", "List transactions")
+		edit        = app.Command("edit", "Edit transactions")
+		importCmd   = app.Command("import", "Import transactions from raw CSV exports")
+		decryptCmd  = app.Command("decrypt", "Decrypt a file")
+		encryptCmd  = app.Command("encrypt", "Encrypt a file")
 	)
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
+	log := NewLogger()
+	if *verbose {
+		log = log.ToWriter(os.Stdout)
+	}
 
 	startParsed, err := time.Parse("01/02/2006", *start)
 	if err != nil {
@@ -51,7 +54,8 @@ func main() {
 		categoriesList = strings.Split(*categories, ",")
 	}
 
-	pdb, err := NewPennyDb(*db, log, []byte(os.Getenv("PENNY_SECRET_KEY")))
+	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
+	pdb, err := NewPennyDb(*db, log, key)
 	check(err)
 
 	slice := pdb.Slice(startParsed, endParsed, regex, categoriesList)
@@ -62,8 +66,18 @@ func main() {
 	}
 
 	switch command {
+	case encryptCmd.FullCommand():
+		contents, err := ioutil.ReadAll(os.Stdin)
+		check(err)
+		ciphertext, err := encrypt(key, contents)
+		check(err)
+		os.Stdout.Write(ciphertext)
 	case decryptCmd.FullCommand():
-		pdb.WriteDecryptedDb(*decryptCmdOutputPath)
+		contents, err := ioutil.ReadAll(os.Stdin)
+		check(err)
+		plaintext, err := decrypt(key, contents)
+		check(err)
+		os.Stdout.Write(plaintext)
 	case importCmd.FullCommand():
 		importer := NewTransactionImporter()
 
