@@ -109,6 +109,37 @@ func (slice *TxSlice) Total() float64 {
 	return total
 }
 
+func (slice *TxSlice) MarkPayoffs(log *Logger) {
+	var matches = make(map[*Transaction]*Transaction)
+	for _, tx := range slice.transactions {
+		if tx.Category != "" {
+			continue
+		}
+		var candidates []*Transaction
+		for _, tx2 := range slice.transactions {
+			if tx2.Category != "" {
+				continue
+			}
+			if tx.Amount+tx2.Amount == 0.0 {
+				candidates = append(candidates, tx2)
+			}
+		}
+		if len(candidates) > 1 {
+			log.Info("Transaction: %s has multiple candiates", tx.CsvRow())
+			continue
+		}
+		if len(candidates) == 1 {
+			tx2 := candidates[0]
+			if tx.Category == "" && tx2.Category == "" {
+				matches[tx] = tx2
+				matches[tx2] = tx
+				tx.Category = "payoff"
+				tx2.Category = "payoff"
+			}
+		}
+	}
+}
+
 func (slice *TxSlice) GetEditTsv() []byte {
 	var buf bytes.Buffer
 	writer := csv.NewWriter(&buf)

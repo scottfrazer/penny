@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
+	"io"
 	"io/ioutil"
 	"os"
 	"regexp"
@@ -81,8 +81,8 @@ func (pdb *PennyDb) WriteDecryptedDb(outfile string) error {
 	return nil
 }
 
-func (pdb *PennyDb) SaveEditTsv(contents []byte) error {
-	r := csv.NewReader(bytes.NewReader(contents))
+func (pdb *PennyDb) SaveEditTsv(reader io.Reader) error {
+	r := csv.NewReader(reader)
 	records, err := r.ReadAll()
 	if err != nil {
 		return err

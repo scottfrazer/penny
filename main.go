@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"io/ioutil"
@@ -16,18 +17,19 @@ func main() {
 	defaultEnd := time.Now().Format("01/02/2006")
 
 	var (
-		app         = kingpin.New("finance", "A command-line finance manager")
-		verbose     = app.Flag("verbose", "Verbose output").Short('v').Bool()
-		db          = app.Flag("db", "Path to database file").Default("penny.sqlite3.encrypted").String()
-		start       = app.Flag("start", "Start date (MM/DD/YYYY)").Default(defaultStart).String()
-		end         = app.Flag("end", "End date (MM/DD/YYYY)").Default(defaultEnd).String()
-		categories  = app.Flag("category", "Filter by categories").String()
-		regexString = app.Flag("regex", "Filter by regular expression").String()
-		list        = app.Command("list", "List transactions")
-		edit        = app.Command("edit", "Edit transactions")
-		importCmd   = app.Command("import", "Import transactions from raw CSV exports")
-		decryptCmd  = app.Command("decrypt", "Decrypt a file")
-		encryptCmd  = app.Command("encrypt", "Encrypt a file")
+		app            = kingpin.New("finance", "A command-line finance manager")
+		verbose        = app.Flag("verbose", "Verbose output").Short('v').Bool()
+		db             = app.Flag("db", "Path to database file").Default("penny.sqlite3.encrypted").String()
+		start          = app.Flag("start", "Start date (MM/DD/YYYY)").Default(defaultStart).String()
+		end            = app.Flag("end", "End date (MM/DD/YYYY)").Default(defaultEnd).String()
+		categories     = app.Flag("category", "Filter by categories").String()
+		regexString    = app.Flag("regex", "Filter by regular expression").String()
+		list           = app.Command("list", "List transactions")
+		edit           = app.Command("edit", "Edit transactions")
+		importCmd      = app.Command("import", "Import transactions from raw CSV exports")
+		markPayoffsCmd = app.Command("mark-payoffs", "Mark transactions that cancel each other into the 'payoffs' category")
+		decryptCmd     = app.Command("decrypt", "Decrypt a file")
+		encryptCmd     = app.Command("encrypt", "Encrypt a file")
 	)
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -66,6 +68,14 @@ func main() {
 	}
 
 	switch command {
+	case markPayoffsCmd.FullCommand():
+		slice.MarkPayoffs(log)
+		tsv := slice.GetEditTsv()
+		// reload the slice
+		pdb2, err := NewPennyDb(*db, log, key)
+		check(err)
+		// apply the edits
+		check(pdb2.SaveEditTsv(bytes.NewReader(tsv)))
 	case encryptCmd.FullCommand():
 		contents, err := ioutil.ReadAll(os.Stdin)
 		check(err)
@@ -133,6 +143,6 @@ func main() {
 
 		contents, err := ioutil.ReadFile(tmpfile.Name())
 		check(err)
-		pdb.SaveEditTsv(contents)
+		pdb.SaveEditTsv(bytes.NewReader(contents))
 	}
 }
