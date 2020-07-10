@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/gdamore/tcell"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"io/ioutil"
 	"os"
@@ -26,8 +27,11 @@ func main() {
 		regexString    = app.Flag("regex", "Filter by regular expression").String()
 		list           = app.Command("list", "List transactions")
 		edit           = app.Command("edit", "Edit transactions")
+		ui             = app.Command("ui", "Launch terminal based UI")
 		importCmd      = app.Command("import", "Import transactions from raw CSV exports")
 		markPayoffsCmd = app.Command("mark-payoffs", "Mark transactions that cancel each other into the 'payoffs' category")
+		summary        = app.Command("summary", "Year summary")
+		summary_year   = app.Flag("year", "Year").Int()
 		decryptCmd     = app.Command("decrypt", "Decrypt a file")
 		encryptCmd     = app.Command("encrypt", "Encrypt a file")
 	)
@@ -124,6 +128,23 @@ func main() {
 		slice.WriteHumanReadableTable(os.Stdout)
 		fmt.Printf("\n\n")
 		slice.WriteHumanReadableTotals(os.Stdout)
+	case summary.FullCommand():
+		fmt.Printf("year: %d\n", *summary_year)
+		fmt.Printf("slice: %v\n", slice)
+	case ui.FullCommand():
+		tcell.SetEncodingFallback(tcell.EncodingFallbackASCII)
+		s, e := tcell.NewScreen()
+
+		if e != nil {
+			panic(e)
+		}
+
+		if e = s.Init(); e != nil {
+			panic(e)
+		}
+
+		ps := NewPennyScreen(s, slice.TableRows(false))
+		ps.Display()
 	case edit.FullCommand():
 		tmpfile, err := ioutil.TempFile("", "")
 		check(err)
