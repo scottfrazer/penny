@@ -217,14 +217,15 @@ type Window interface {
 }
 
 type PennyScreen struct {
-	screen  tcell.Screen
-	results chan string
-	popup   *UIPopupInput
-	table   *UITable
-	table2  *UITable
-	focus   []UIElement
-	quit    chan struct{}
-	key     *tcell.EventKey
+	screen     tcell.Screen
+	results    chan string
+	popup      *UIPopupInput
+	table      *UITable
+	table2     *UITable
+	categories *UITable
+	focus      []UIElement
+	quit       chan struct{}
+	key        *tcell.EventKey
 }
 
 func (ui *PennyScreen) Unfocus(e UIElement) {
@@ -240,13 +241,15 @@ func (ui *PennyScreen) Parent() UIElement {
 
 func NewPennyScreen(screen tcell.Screen, rows []string) *PennyScreen {
 	results := make(chan string)
-	ps := &PennyScreen{screen, results, nil, nil, nil, nil, make(chan struct{}), nil}
+	ps := &PennyScreen{screen, results, nil, nil, nil, nil, nil, make(chan struct{}), nil}
 	popup := &UIPopupInput{ps, ps, "", nil, false, 40, 3}
 	table := &UITable{ps, "Transactions", ps, rows, 0, 0, 0, 0, 0, 0}
 	table2 := &UITable{ps, "Debug", ps, []string{}, 0, 0, 0, 0, 0, 0}
+	categories := &UITable{ps, "Categories", ps, []string{}, 0, 0, 0, 0, 0, 0}
 	ps.popup = popup
 	ps.table = table
 	ps.table2 = table2
+	ps.categories = categories
 	ps.focus = []UIElement{table}
 	return ps
 }
@@ -294,18 +297,25 @@ func (ps *PennyScreen) Render(screen tcell.Screen) {
 	ps.table2.x = w / 2
 	ps.table2.y = 0
 	ps.table2.w = w / 2
-	ps.table2.h = h / 2
+	ps.table2.h = 10
 	ps.table2.rows = []string{
 		fmt.Sprintf("selected=%d", ps.table.selected),
 		fmt.Sprintf("rows=%d", len(ps.table.rows)),
 		fmt.Sprintf("top=%d", ps.table.top),
 		fmt.Sprintf("h=%d", ps.table.h),
+		fmt.Sprintf("window w=%d", w),
+		fmt.Sprintf("window h=%d", h),
 	}
-
 	if ps.key != nil {
 		ps.table2.rows = append(ps.table2.rows, fmt.Sprintf("key=%s, mod=%d", ps.key.Name(), ps.key.Modifiers()))
 	}
 	ps.table2.Render(screen)
+
+	ps.categories.x = w / 2
+	ps.categories.y = 10
+	ps.categories.w = w / 2
+	ps.categories.h = h - 10
+	ps.categories.Render(screen)
 
 	ps.popup.Render(screen)
 }
