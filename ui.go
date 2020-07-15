@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/gdamore/tcell"
+	"regexp"
 	"time"
 )
 
@@ -59,7 +60,7 @@ type UITable struct {
 	parent   UIElement
 	title    string
 	window   Window
-	rows     []string
+	rows     func() []string
 	top      int
 	selected int
 	x        int
@@ -71,8 +72,9 @@ type UITable struct {
 func (ui *UITable) Render(screen tcell.Screen) {
 	BorderNormal(screen, ui.title, ui.x, ui.y, ui.w, ui.h)
 	y := ui.y + 1
-	for i := ui.top; i < len(ui.rows) && i < ui.h-2+ui.top; i++ {
-		row := ui.rows[i]
+	rows := ui.rows()
+	for i := ui.top; i < len(rows) && i < ui.h-2+ui.top; i++ {
+		row := rows[i]
 		st := tcell.StyleDefault
 		if i == ui.selected {
 			st = st.Background(tcell.NewRGBColor(-1, 0, 0))
@@ -109,19 +111,21 @@ func (ui *UITable) Up(i int) {
 }
 
 func (ui *UITable) Down(i int) {
-	if ui.selected < len(ui.rows)-1 {
+	rows := ui.rows()
+	if ui.selected < len(rows)-1 {
 		if ui.selected-ui.top+i >= ui.h-3 {
-			ui.top = Min(ui.top+i, len(ui.rows)-1)
+			ui.top = Min(ui.top+i, len(rows)-1)
 		}
-		ui.selected = Min(ui.selected+i, len(ui.rows)-1)
+		ui.selected = Min(ui.selected+i, len(rows)-1)
 	}
 }
 
 func (ui *UITable) Bottom() {
-	ui.selected = len(ui.rows) - 1
+	rows := ui.rows()
+	ui.selected = len(rows) - 1
 	ui.top = 0
-	if len(ui.rows) > ui.h-2 {
-		ui.top = len(ui.rows) - ui.h + 2
+	if len(rows) > ui.h-2 {
+		ui.top = len(rows) - ui.h + 2
 	}
 }
 
@@ -217,15 +221,21 @@ type Window interface {
 }
 
 type PennyScreen struct {
-	screen     tcell.Screen
-	results    chan string
-	popup      *UIPopupInput
-	table      *UITable
-	table2     *UITable
-	categories *UITable
-	focus      []UIElement
-	quit       chan struct{}
-	key        *tcell.EventKey
+	screen        tcell.Screen
+	db            *PennyDb
+	slice         *TxSlice
+	start         time.Time
+	end           time.Time
+	regex         *regexp.Regexp
+	categories    []string
+	results       chan string
+	popup         *UIPopupInput
+	table         *UITable
+	table2        *UITable
+	categoryTable *UITable
+	focus         []UIElement
+	quit          chan struct{}
+	key           *tcell.EventKey
 }
 
 func (ui *PennyScreen) Unfocus(e UIElement) {
@@ -239,19 +249,46 @@ func (ui *PennyScreen) Parent() UIElement {
 	return nil
 }
 
-func NewPennyScreen(screen tcell.Screen, rows []string) *PennyScreen {
+func NewPennyScreen(screen tcell.Screen, db *PennyDb, start, end time.Time, regex *regexp.Regexp, categories []string) *PennyScreen {
 	results := make(chan string)
-	ps := &PennyScreen{screen, results, nil, nil, nil, nil, nil, make(chan struct{}), nil}
+	slice := db.Slice(start, end, regex, categories)
+	ps := &PennyScreen{screen, db, slice, start, end, regex, categories, results, nil, nil, nil, nil, nil, make(chan struct{}), nil}
 	popup := &UIPopupInput{ps, ps, "", nil, false, 40, 3}
-	table := &UITable{ps, "Transactions", ps, rows, 0, 0, 0, 0, 0, 0}
-	table2 := &UITable{ps, "Debug", ps, []string{}, 0, 0, 0, 0, 0, 0}
-	categories := &UITable{ps, "Categories", ps, []string{}, 0, 0, 0, 0, 0, 0}
+	table := &UITable{ps, "Transactions", ps, ps.TxRows, 0, 0, 0, 0, 0, 0}
+	table2 := &UITable{ps, "Debug", ps, func() []string { return []string{} }, 0, 0, 0, 0, 0, 0}
+	categoryTable := &UITable{ps, "Categories", ps, ps.CategoryRows, 0, 0, 0, 0, 0, 0}
 	ps.popup = popup
 	ps.table = table
 	ps.table2 = table2
-	ps.categories = categories
+	ps.categoryTable = categoryTable
 	ps.focus = []UIElement{table}
 	return ps
+}
+
+func (ps *PennyScreen) TxRows() []string {
+	return ps.slice.TableRows(false)
+}
+
+func (ps *PennyScreen) CategoryRows() []string {
+	rows := []string{}
+	netTransactions := 0
+	netAmount := 0.0
+	elapsedDays := ps.slice.ElapsedDays()
+	for _, summary := range ps.slice.CategorySummaries() {
+		netAmount += summary.Total
+		netTransactions += summary.TransactionCount
+		perDay := summary.Total / elapsedDays
+		rows = append(rows, fmt.Sprintf(
+			"%15s %3d %10s %10s %10s %s %.2f%%",
+			summary.Category,
+			summary.TransactionCount,
+			money(summary.Total, false),
+			money(perDay, false),
+			money(perDay*7, false),
+			money(perDay*30, false),
+			summary.PercentageOfIncome))
+	}
+	return rows
 }
 
 func (ps *PennyScreen) Display() {
@@ -269,8 +306,7 @@ func (ps *PennyScreen) Display() {
 	go func() {
 		for {
 			select {
-			case s := <-ps.results:
-				ps.table.rows = append(ps.table.rows, s)
+			case _ = <-ps.results:
 			}
 		}
 	}()
@@ -298,24 +334,27 @@ func (ps *PennyScreen) Render(screen tcell.Screen) {
 	ps.table2.y = 0
 	ps.table2.w = w / 2
 	ps.table2.h = 10
-	ps.table2.rows = []string{
-		fmt.Sprintf("selected=%d", ps.table.selected),
-		fmt.Sprintf("rows=%d", len(ps.table.rows)),
-		fmt.Sprintf("top=%d", ps.table.top),
-		fmt.Sprintf("h=%d", ps.table.h),
-		fmt.Sprintf("window w=%d", w),
-		fmt.Sprintf("window h=%d", h),
-	}
-	if ps.key != nil {
-		ps.table2.rows = append(ps.table2.rows, fmt.Sprintf("key=%s, mod=%d", ps.key.Name(), ps.key.Modifiers()))
+	ps.table2.rows = func() []string {
+		r := []string{
+			fmt.Sprintf("selected=%d", ps.table.selected),
+			fmt.Sprintf("rows=%d", len(ps.TxRows())),
+			fmt.Sprintf("top=%d", ps.table.top),
+			fmt.Sprintf("h=%d", ps.table.h),
+			fmt.Sprintf("window w=%d", w),
+			fmt.Sprintf("window h=%d", h),
+		}
+		if ps.key != nil {
+			r = append(r, fmt.Sprintf("key=%s, mod=%d", ps.key.Name(), ps.key.Modifiers()))
+		}
+		return r
 	}
 	ps.table2.Render(screen)
 
-	ps.categories.x = w / 2
-	ps.categories.y = 10
-	ps.categories.w = w / 2
-	ps.categories.h = h - 10
-	ps.categories.Render(screen)
+	ps.categoryTable.x = w / 2
+	ps.categoryTable.y = 10
+	ps.categoryTable.w = w / 2
+	ps.categoryTable.h = h - 10
+	ps.categoryTable.Render(screen)
 
 	ps.popup.Render(screen)
 }

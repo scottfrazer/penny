@@ -143,7 +143,7 @@ func main() {
 			panic(e)
 		}
 
-		ps := NewPennyScreen(s, slice.TableRows(false))
+		ps := NewPennyScreen(s, pdb, startParsed, endParsed, regex, categoriesList)
 		ps.Display()
 	case edit.FullCommand():
 		tmpfile, err := ioutil.TempFile("", "")
