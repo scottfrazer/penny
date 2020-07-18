@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/gdamore/tcell"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -16,17 +17,17 @@ type BorderRunes struct {
 	Sides       rune
 }
 
-func BorderNormal(s tcell.Screen, title string, x, y, w, h int) {
-	Border(s, title, x, y, w, h, BorderRunes{'┌', '┐', '└', '┘', '━', '│'})
-	//Border(s, title, x, y, w, h, BorderRunes{'+', '+', '+', '+', '-', '|'})
+func BorderNormal(s tcell.Screen, title string, x, y, w, h int, focus bool) {
+	Border(s, title, x, y, w, h, focus, BorderRunes{'┌', '┐', '└', '┘', '━', '│'})
+	//Border(s, title, x, y, w, h, selected, BorderRunes{'+', '+', '+', '+', '-', '|'})
 }
 
-func BorderNone(s tcell.Screen, x, y, w, h int) {
-	Border(s, "", x, y, w, h, BorderRunes{' ', ' ', ' ', ' ', ' ', ' '})
-}
-
-func Border(s tcell.Screen, title string, x, y, w, h int, runes BorderRunes) {
+func Border(s tcell.Screen, title string, x, y, w, h int, focus bool, runes BorderRunes) {
 	st := tcell.StyleDefault
+	if focus {
+		st = tcell.StyleDefault.Foreground(tcell.ColorGreen)
+	}
+
 	s.SetContent(x, y, runes.TopLeft, nil, st)
 	s.SetContent(x+w-1, y, runes.TopRight, nil, st)
 	s.SetContent(x, y+h-1, runes.BottomLeft, nil, st)
@@ -35,14 +36,14 @@ func Border(s tcell.Screen, title string, x, y, w, h int, runes BorderRunes) {
 		s.SetContent(i, y, runes.TopBottom, nil, st)
 		s.SetContent(i, y+h-1, runes.TopBottom, nil, st)
 	}
-	draw_string(s, title, x+2, y, st)
+	DrawString(s, title, x+2, y, tcell.StyleDefault)
 	for i := y + 1; i < y+h-1; i++ {
 		s.SetContent(x, i, runes.Sides, nil, st)
 		s.SetContent(x+w-1, i, runes.Sides, nil, st)
 	}
 }
 
-func draw_string(screen tcell.Screen, s string, x, y int, style tcell.Style) {
+func DrawString(screen tcell.Screen, s string, x, y int, style tcell.Style) {
 	i := x
 	for _, r := range s {
 		screen.SetContent(i, y, r, nil, style)
@@ -54,35 +55,52 @@ type UIElement interface {
 	Handle(event tcell.Event) bool
 	Parent() UIElement
 	Render(screen tcell.Screen)
+	X() int
+	Y() int
+	Width() int
+	Height() int
 }
 
 type UITable struct {
-	parent   UIElement
-	title    string
-	window   Window
-	rows     func() []string
-	top      int
-	selected int
-	x        int
-	y        int
-	w        int
-	h        int
+	parent     UIElement
+	root       Window
+	title      string
+	rows       func() []string
+	top        int
+	selected   int
+	x, y, w, h int
+}
+
+func (ui *UITable) X() int {
+	return ui.x
+}
+
+func (ui *UITable) Y() int {
+	return ui.y
+}
+
+func (ui *UITable) Width() int {
+	return ui.w
+}
+
+func (ui *UITable) Height() int {
+	return ui.h
 }
 
 func (ui *UITable) Render(screen tcell.Screen) {
-	BorderNormal(screen, ui.title, ui.x, ui.y, ui.w, ui.h)
+	BorderNormal(screen, ui.title, ui.x, ui.y, ui.w, ui.h, ui.root.IsFocus(ui))
 	y := ui.y + 1
 	rows := ui.rows()
 	for i := ui.top; i < len(rows) && i < ui.h-2+ui.top; i++ {
 		row := rows[i]
 		st := tcell.StyleDefault
-		if i == ui.selected {
+		if i == ui.selected && ui.root.IsFocus(ui) {
 			st = st.Background(tcell.NewRGBColor(-1, 0, 0))
 		}
 		if len(row) > ui.w {
 			row = row[:ui.w]
 		}
-		draw_string(screen, row, ui.x+1, y, st)
+		DrawString(screen, row, ui.x+1, y, st)
 		y++
 	}
 }
@@ -101,16 +119,19 @@ func Min(i, j int) int {
 	return j
 }
 
-func (ui *UITable) Up(i int) {
+func (ui *UITable) Up(i int) bool {
+	original := ui.selected
 	if ui.selected-i < ui.top && ui.top != 0 {
 		ui.top = Max(ui.top-i, 0)
 	}
 	if ui.selected > 0 {
 		ui.selected = Max(ui.selected-i, 0)
 	}
+	return original == ui.selected
 }
 
-func (ui *UITable) Down(i int) {
+func (ui *UITable) Down(i int) bool {
+	original := ui.selected
 	rows := ui.rows()
 	if ui.selected < len(rows)-1 {
 		if ui.selected-ui.top+i >= ui.h-3 {
@@ -118,20 +139,25 @@ func (ui *UITable) Down(i int) {
 		}
 		ui.selected = Min(ui.selected+i, len(rows)-1)
 	}
+	return original == ui.selected
 }
 
-func (ui *UITable) Bottom() {
+func (ui *UITable) Bottom() bool {
+	original := ui.selected
 	rows := ui.rows()
 	ui.selected = len(rows) - 1
 	ui.top = 0
 	if len(rows) > ui.h-2 {
 		ui.top = len(rows) - ui.h + 2
 	}
+	return original == ui.selected
 }
 
-func (ui *UITable) Top() {
+func (ui *UITable) Top() bool {
+	original := ui.selected
 	ui.selected = 0
 	ui.top = 0
+	return original == ui.selected
 }
 
 func (ui *UITable) Handle(e tcell.Event) bool {
@@ -139,23 +165,23 @@ func (ui *UITable) Handle(e tcell.Event) bool {
 	case *tcell.EventKey:
 		switch e.Key() {
 		case tcell.KeyUp:
-			ui.Up(1)
+			return ui.Up(1)
 		case tcell.KeyDown:
-			ui.Down(1)
+			return ui.Down(1)
 		case tcell.KeyCtrlU:
-			ui.Up(20)
+			return ui.Up(20)
 		case tcell.KeyCtrlD:
-			ui.Down(20)
+			return ui.Down(20)
 		case tcell.KeyRune:
 			switch e.Rune() {
 			case '1':
-				ui.Top()
+				return ui.Top()
 			case 'j':
-				ui.Down(1)
+				return ui.Down(1)
 			case 'k':
-				ui.Up(1)
+				return ui.Up(1)
 			case 'G':
-				ui.Bottom()
+				return ui.Bottom()
 			}
 		}
 	}
@@ -172,8 +198,26 @@ type UIPopupInput struct {
 	buffer  string
 	result  chan string
 	visible bool
+	x       int
+	y       int
 	w       int
 	h       int
+}
+
+func (ui *UIPopupInput) X() int {
+	return ui.x
+}
+
+func (ui *UIPopupInput) Y() int {
+	return ui.y
+}
+
+func (ui *UIPopupInput) Width() int {
+	return ui.w
+}
+
+func (ui *UIPopupInput) Height() int {
+	return ui.h
 }
 
 func (ui *UIPopupInput) Parent() UIElement {
@@ -182,11 +226,10 @@ func (ui *UIPopupInput) Parent() UIElement {
 
 func (ui *UIPopupInput) Render(screen tcell.Screen) {
 	if ui.visible {
-		w, h := screen.Size()
-		px := (w - ui.w) / 2
-		py := (h - ui.h) / 2
-		BorderNormal(screen, "Input", px, py, ui.w, ui.h)
-		draw_string(screen, ui.buffer+"_", px+1, py+1, tcell.StyleDefault)
+		px := (ui.parent.Width() - ui.w) / 2
+		py := (ui.parent.Height() - ui.h) / 2
+		BorderNormal(screen, "Input", px, py, ui.w, ui.h, true)
+		DrawString(screen, ui.buffer+"_", px+1, py+1, tcell.StyleDefault)
 	}
 }
 
@@ -200,7 +243,6 @@ func (ui *UIPopupInput) Handle(ev tcell.Event) bool {
 		case tcell.KeyEscape:
 			ui.visible = false
 			ui.buffer = ""
-			ui.window.Unfocus(ui)
 		case tcell.KeyBackspace2:
 			if last := len(ui.buffer) - 1; last >= 0 {
 				ui.buffer = ui.buffer[:last]
@@ -217,32 +259,138 @@ func (ui *UIPopupInput) GetText() string {
 }
 
 type Window interface {
-	Unfocus(e UIElement)
+	IsFocus(e UIElement) bool
+	SetFocus(e UIElement)
+}
+
+type UIVar struct {
+	id    string
+	value string
+}
+
+type UIInput struct {
+	id    string
+	title string
+	val   func() string
+}
+
+type TxWindow struct {
+	parent       UIElement
+	root         Window
+	transactions *UITable
+	categories   *UITable
+	criteria     *UITable
+	debug        *UITable
+	x, y, w, h   int
+}
+
+func (ui *TxWindow) Render(screen tcell.Screen) {
+	ui.transactions.x = ui.parent.X()
+	ui.transactions.y = ui.parent.Y()
+	ui.transactions.w = ui.parent.Width() / 2
+	ui.transactions.h = ui.parent.Height()
+	ui.criteria.x = ui.parent.X() + ui.parent.Width()/2
+	ui.criteria.y = ui.parent.Y()
+	ui.criteria.w = ui.parent.Width() / 2
+	ui.criteria.h = 10
+	ui.debug.x = ui.parent.X() + ui.parent.Width()/2
+	ui.debug.y = ui.parent.Y()
+	ui.debug.w = ui.parent.Width() / 2
+	ui.debug.h = 10
+	ui.categories.x = ui.parent.X() + ui.parent.Width()/2
+	ui.categories.y = ui.parent.Y() + ui.criteria.h
+	ui.categories.w = ui.parent.Width() / 2
+	ui.categories.h = ui.parent.Height() - ui.criteria.h
+
+	ui.categories.Render(screen)
+	ui.transactions.Render(screen)
+	ui.criteria.Render(screen)
+}
+
+func (ui *TxWindow) Handle(ev tcell.Event) bool {
+	switch ev := ev.(type) {
+	case *tcell.EventKey:
+		switch ev.Key() {
+		case tcell.KeyRight:
+			if ui.root.IsFocus(ui.transactions) {
+				ui.root.SetFocus(ui.criteria)
+			}
+		case tcell.KeyLeft:
+			if ui.root.IsFocus(ui.criteria) || ui.root.IsFocus(ui.categories) {
+				ui.root.SetFocus(ui.transactions)
+			}
+		case tcell.KeyDown:
+			if ui.root.IsFocus(ui.criteria) {
+				ui.root.SetFocus(ui.categories)
+			}
+		case tcell.KeyUp:
+			if ui.root.IsFocus(ui.categories) {
+				ui.root.SetFocus(ui.criteria)
+			}
+		}
+	}
+	return true
+}
+
+func (ui *TxWindow) Parent() UIElement {
+	return ui.parent
+}
+
+func (ui *TxWindow) X() int {
+	return ui.x
+}
+
+func (ui *TxWindow) Y() int {
+	return ui.y
+}
+
+func (ui *TxWindow) Width() int {
+	return ui.w
+}
+
+func (ui *TxWindow) Height() int {
+	return ui.h
 }
 
 type PennyScreen struct {
-	screen        tcell.Screen
-	db            *PennyDb
-	slice         *TxSlice
-	start         time.Time
-	end           time.Time
-	regex         *regexp.Regexp
-	categories    []string
-	results       chan string
-	popup         *UIPopupInput
-	table         *UITable
-	table2        *UITable
-	categoryTable *UITable
-	focus         []UIElement
-	quit          chan struct{}
-	key           *tcell.EventKey
+	screen     tcell.Screen
+	db         *PennyDb
+	start      time.Time
+	end        time.Time
+	regex      *regexp.Regexp
+	categories []string
+	slice      *TxSlice // cached slice from `db` based on the above parameters
+	results    chan UIVar
+	txWindow   *TxWindow
+	focus      UIElement
+	quit       chan struct{}
+	key        *tcell.EventKey
+	w          int
+	h          int
 }
 
-func (ui *PennyScreen) Unfocus(e UIElement) {
-	top := len(ui.focus) - 1
-	if ui.focus[top] == e {
-		ui.focus = ui.focus[:top]
-	}
+func (ui *PennyScreen) SetFocus(e UIElement) {
+	ui.focus = e
+}
+
+func (ui *PennyScreen) IsFocus(e UIElement) bool {
+	return ui.focus == e
+}
+
+func (ui *PennyScreen) X() int {
+	return 0
+}
+
+func (ui *PennyScreen) Y() int {
+	return 0
+}
+
+func (ui *PennyScreen) Width() int {
+	return ui.w
+}
+
+func (ui *PennyScreen) Height() int {
+	return ui.h
 }
 
 func (ui *PennyScreen) Parent() UIElement {
@@ -250,19 +398,56 @@ func (ui *PennyScreen) Parent() UIElement {
 }
 
 func NewPennyScreen(screen tcell.Screen, db *PennyDb, start, end time.Time, regex *regexp.Regexp, categories []string) *PennyScreen {
-	results := make(chan string)
-	slice := db.Slice(start, end, regex, categories)
-	ps := &PennyScreen{screen, db, slice, start, end, regex, categories, results, nil, nil, nil, nil, nil, make(chan struct{}), nil}
-	popup := &UIPopupInput{ps, ps, "", nil, false, 40, 3}
-	table := &UITable{ps, "Transactions", ps, ps.TxRows, 0, 0, 0, 0, 0, 0}
-	table2 := &UITable{ps, "Debug", ps, func() []string { return []string{} }, 0, 0, 0, 0, 0, 0}
-	categoryTable := &UITable{ps, "Categories", ps, ps.CategoryRows, 0, 0, 0, 0, 0, 0}
-	ps.popup = popup
-	ps.table = table
-	ps.table2 = table2
-	ps.categoryTable = categoryTable
-	ps.focus = []UIElement{table}
+	ps := &PennyScreen{
+		screen:     screen,
+		db:         db,
+		start:      start,
+		end:        end,
+		regex:      regex,
+		categories: categories,
+		results:    make(chan UIVar),
+		quit:       make(chan struct{}),
+	}
+
+	ps.txWindow = &TxWindow{
+		transactions: &UITable{
+			title: "Transactions",
+			rows:  ps.TxRows,
+		},
+		categories: &UITable{
+			title: "Categories",
+			rows:  ps.CategoryRows,
+		},
+		criteria: &UITable{
+			title: "Criteria",
+			rows: func() []string {
+				return []string{
+					fmt.Sprintf("Date Range: %s - %s", ps.start.Format("01/02/2006"), ps.end.Format("01/02/2006")),
+					fmt.Sprintf("Categories: %s", strings.Join(ps.categories, ", ")),
+					fmt.Sprintf("Regex: %s", ps.regex.String()),
+				}
+			},
+		},
+		debug: &UITable{
+			title: "Debug",
+			rows:  func() []string { return []string{} },
+		},
+	}
+
+	ps.txWindow.parent = ps
+	ps.txWindow.root = ps
+
+	for _, elem := range []*UITable{ps.txWindow.transactions, ps.txWindow.categories, ps.txWindow.criteria, ps.txWindow.debug} {
+		elem.parent = ps.txWindow
+		elem.root = ps
+	}
+	ps.focus = ps.txWindow.transactions
+	ps.Load()
 	return ps
+}
+
+func (ps *PennyScreen) Load() {
+	ps.slice = ps.db.Slice(ps.start, ps.end, ps.regex, ps.categories)
 }
 
 func (ps *PennyScreen) TxRows() []string {
@@ -295,9 +480,11 @@ func (ps *PennyScreen) Display() {
 	go func() {
 		for {
 			e := ps.screen.PollEvent()
-			for element := ps.focus[len(ps.focus)-1]; element != nil; element = element.Parent() {
-				if element.Handle(e) == false {
-					break
+			if e != nil {
+				for element := ps.focus; element != nil; element = element.Parent() {
+					if element.Handle(e) == false {
+						break
+					}
 				}
 			}
 		}
@@ -325,21 +512,23 @@ loop:
 }
 
 func (ps *PennyScreen) Render(screen tcell.Screen) {
+	DrawString(ps.screen, "this is a title", 0, 0, tcell.StyleDefault)
 	w, h := screen.Size()
-	ps.table.w = w / 2
-	ps.table.h = h
-	ps.table.Render(screen)
+	ps.w = w
+	ps.h = h
 
-	ps.table2.x = w / 2
-	ps.table2.y = 0
-	ps.table2.w = w / 2
-	ps.table2.h = 10
-	ps.table2.rows = func() []string {
+	ps.txWindow.x = 1
+	ps.txWindow.y = 0
+	ps.txWindow.w = ps.w
+	ps.txWindow.h = ps.h
+	ps.txWindow.Render(screen)
+
+	ps.txWindow.debug.rows = func() []string {
 		r := []string{
-			fmt.Sprintf("selected=%d", ps.table.selected),
-			fmt.Sprintf("rows=%d", len(ps.TxRows())),
-			fmt.Sprintf("top=%d", ps.table.top),
-			fmt.Sprintf("h=%d", ps.table.h),
+			fmt.Sprintf("selected=%d", ps.txWindow.transactions.selected),
+			fmt.Sprintf("top=%d", ps.txWindow.transactions.top),
+			fmt.Sprintf("h=%d", ps.txWindow.h),
+			fmt.Sprintf("rows=%d", len(ps.slice.transactions)),
 			fmt.Sprintf("window w=%d", w),
 			fmt.Sprintf("window h=%d", h),
 		}
@@ -348,15 +537,6 @@ func (ps *PennyScreen) Render(screen tcell.Screen) {
 		}
 		return r
 	}
-	ps.table2.Render(screen)
-
-	ps.categoryTable.x = w / 2
-	ps.categoryTable.y = 10
-	ps.categoryTable.w = w / 2
-	ps.categoryTable.h = h - 10
-	ps.categoryTable.Render(screen)
-
-	ps.popup.Render(screen)
 }
 
 func (ps *PennyScreen) Redraw() {
@@ -373,12 +553,6 @@ func (ps *PennyScreen) Handle(ev tcell.Event) bool {
 		switch ev.Key() {
 		case tcell.KeyEscape:
 			close(ps.quit)
-		case tcell.KeyCtrlI:
-			ps.popup.visible = !ps.popup.visible
-			if ps.popup.visible {
-				ps.popup.result = ps.results
-				ps.focus = append(ps.focus, ps.popup)
-			}
 		case tcell.KeyRune:
 			switch ev.Rune() {
 			case 'q':
