@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+type PennyCLI struct {
+	Verbose    bool
+	DbPath     string
+	Start      time.Time
+	End        time.Time
+	Categories []string
+	Regex      *regexp.Regexp
+}
+
 func main() {
 	defaultStart := time.Now().Add(-365 * 24 * time.Hour).Format("01/02/2006")
 	defaultEnd := time.Now().Format("01/02/2006")
@@ -54,13 +63,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
+
+	switch command {
+	case encryptCmd.FullCommand():
+		contents, err := ioutil.ReadAll(os.Stdin)
+		check(err)
+		ciphertext, err := encrypt(key, contents)
+		check(err)
+		os.Stdout.Write(ciphertext)
+		return
+	}
+
 	regex := regexp.MustCompile(*regexString)
 	categoriesList := []string{}
 	if len(*categories) > 0 {
 		categoriesList = strings.Split(*categories, ",")
 	}
 
-	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
 	pdb, err := NewPennyDb(*db, log, key)
 	check(err)
 

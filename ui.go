@@ -8,24 +8,38 @@ import (
 	"time"
 )
 
-type BorderRunes struct {
+type UIBorder struct {
 	TopLeft     rune
 	TopRight    rune
 	BottomLeft  rune
 	BottomRight rune
 	TopBottom   rune
 	Sides       rune
+	Style       tcell.Style
+	FocusStyle  tcell.Style
+}
+
+func DefaultUIBorder() UIBorder {
+	return UIBorder{
+		'┌',
+		'┐',
+		'└',
+		'┘',
+		'━',
+		'│',
+		tcell.StyleDefault,
+		tcell.StyleDefault.Foreground(tcell.ColorGreen),
+	}
 }
 
 func BorderNormal(s tcell.Screen, title string, x, y, w, h int, focus bool) {
-	Border(s, title, x, y, w, h, focus, BorderRunes{'┌', '┐', '└', '┘', '━', '│'})
-	//Border(s, title, x, y, w, h, selected, BorderRunes{'+', '+', '+', '+', '-', '|'})
+	Border(s, title, x, y, w, h, focus, DefaultUIBorder())
 }
 
-func Border(s tcell.Screen, title string, x, y, w, h int, focus bool, runes BorderRunes) {
-	st := tcell.StyleDefault
+func Border(s tcell.Screen, title string, x, y, w, h int, focus bool, runes UIBorder) {
+	st := runes.Style
 	if focus {
-		st = tcell.StyleDefault.Foreground(tcell.ColorGreen)
+		st = runes.FocusStyle
 	}
 
 	s.SetContent(x, y, runes.TopLeft, nil, st)
@@ -36,10 +50,18 @@ func Border(s tcell.Screen, title string, x, y, w, h int, focus bool, runes Bord
 		s.SetContent(i, y, runes.TopBottom, nil, st)
 		s.SetContent(i, y+h-1, runes.TopBottom, nil, st)
 	}
-	DrawString(s, title, x+2, y, tcell.StyleDefault)
+	DrawString(s, title, x+2, y, runes.Style)
 	for i := y + 1; i < y+h-1; i++ {
 		s.SetContent(x, i, runes.Sides, nil, st)
 		s.SetContent(x+w-1, i, runes.Sides, nil, st)
+	}
+}
+
+func Box(s tcell.Screen, x, y, w, h int, style tcell.Style) {
+	for i := x; i < x+w; i++ {
+		for j := y; j < y+h; j++ {
+			s.SetContent(i, j, ' ', nil, style)
+		}
 	}
 }
 
@@ -66,6 +88,7 @@ type UITable struct {
 	root       Window
 	title      string
 	rows       func() []string
+	enter      func(*UITable)
 	top        int
 	selected   int
 	x, y, w, h int
@@ -164,6 +187,10 @@ func (ui *UITable) Handle(e tcell.Event) bool {
 	switch e := e.(type) {
 	case *tcell.EventKey:
 		switch e.Key() {
+		case tcell.KeyEnter:
+			if ui.enter != nil {
+				ui.enter(ui)
+			}
 		case tcell.KeyUp:
 			return ui.Up(1)
 		case tcell.KeyDown:
@@ -193,23 +220,22 @@ func (ui *UITable) Parent() UIElement {
 }
 
 type UIPopupInput struct {
-	parent  UIElement
-	window  Window
-	buffer  string
-	result  chan string
-	visible bool
-	x       int
-	y       int
-	w       int
-	h       int
+	parent   UIElement
+	window   Window
+	buffer   string
+	callback func(string)
+	close    func()
+	visible  bool
+	w        int
+	h        int
 }
 
 func (ui *UIPopupInput) X() int {
-	return ui.x
+	return (ui.parent.Width() - ui.w) / 2
 }
 
 func (ui *UIPopupInput) Y() int {
-	return ui.y
+	return (ui.parent.Height() - ui.h) / 2
 }
 
 func (ui *UIPopupInput) Width() int {
@@ -226,10 +252,13 @@ func (ui *UIPopupInput) Parent() UIElement {
 
 func (ui *UIPopupInput) Render(screen tcell.Screen) {
 	if ui.visible {
-		px := (ui.parent.Width() - ui.w) / 2
-		py := (ui.parent.Height() - ui.h) / 2
-		BorderNormal(screen, "Input", px, py, ui.w, ui.h, true)
-		DrawString(screen, ui.buffer+"_", px+1, py+1, tcell.StyleDefault)
+		Box(screen, ui.X()-2, ui.Y()-1, ui.Width()+4, ui.Height()+2, tcell.StyleDefault.Background(tcell.ColorGray))
+		border := DefaultUIBorder()
+		border.Style = tcell.StyleDefault.Background(tcell.ColorGray)
+		border.FocusStyle = tcell.StyleDefault.Background(tcell.ColorGray).Foreground(tcell.ColorGreen)
+		Border(screen, "Input", ui.X(), ui.Y(), ui.Width(), ui.Height(), true, border)
+		//Box(screen, ui.X()+1, ui.Y()+1, ui.Width()-2, ui.Height()-2, tcell.StyleDefault)
+		DrawString(screen, ui.buffer+"_", ui.X()+1, ui.Y()+2, border.Style)
 	}
 }
 
@@ -238,11 +267,12 @@ func (ui *UIPopupInput) Handle(ev tcell.Event) bool {
 	case *tcell.EventKey:
 		switch ev.Key() {
 		case tcell.KeyEnter:
-			ui.result <- ui.buffer
+			ui.callback(ui.buffer)
 			fallthrough
 		case tcell.KeyEscape:
 			ui.visible = false
 			ui.buffer = ""
+			ui.close()
 		case tcell.KeyBackspace2:
 			if last := len(ui.buffer) - 1; last >= 0 {
 				ui.buffer = ui.buffer[:last]
@@ -254,24 +284,9 @@ func (ui *UIPopupInput) Handle(ev tcell.Event) bool {
 	return false
 }
 
-func (ui *UIPopupInput) GetText() string {
-	return ""
-}
-
 type Window interface {
 	IsFocus(e UIElement) bool
 	SetFocus(e UIElement)
-}
-
-type UIVar struct {
-	id    string
-	value string
-}
-
-type UIInput struct {
-	id    string
-	title string
-	val   func() string
 }
 
 type TxWindow struct {
@@ -281,6 +296,7 @@ type TxWindow struct {
 	categories   *UITable
 	criteria     *UITable
 	debug        *UITable
+	popupInput   *UIPopupInput
 	x, y, w, h   int
 }
 
@@ -305,6 +321,7 @@ func (ui *TxWindow) Render(screen tcell.Screen) {
 	ui.categories.Render(screen)
 	ui.transactions.Render(screen)
 	ui.criteria.Render(screen)
+	ui.popupInput.Render(screen)
 }
 
 func (ui *TxWindow) Handle(ev tcell.Event) bool {
@@ -360,7 +377,6 @@ type PennyScreen struct {
 	regex      *regexp.Regexp
 	categories []string
 	slice      *TxSlice // cached slice from `db` based on the above parameters
-	results    chan UIVar
 	txWindow   *TxWindow
 	focus      UIElement
 	quit       chan struct{}
@@ -405,7 +421,6 @@ func NewPennyScreen(screen tcell.Screen, db *PennyDb, start, end time.Time, rege
 		end:        end,
 		regex:      regex,
 		categories: categories,
-		results:    make(chan UIVar),
 		quit:       make(chan struct{}),
 	}
 
@@ -427,16 +442,71 @@ func NewPennyScreen(screen tcell.Screen, db *PennyDb, start, end time.Time, rege
 					fmt.Sprintf("Regex: %s", ps.regex.String()),
 				}
 			},
+			enter: func(table *UITable) {
+				switch table.selected {
+				case 0:
+					popup := ps.txWindow.popupInput
+					popup.buffer = fmt.Sprintf("%s - %s", ps.start.Format("01/02/2006"), ps.end.Format("01/02/2006"))
+					popup.callback = func(s string) {
+						start, end, err := ParseDateRange(s)
+						if err != nil {
+							panic(err)
+						}
+						ps.start = start
+						ps.end = end
+						ps.Load()
+					}
+					popup.close = func() {
+						ps.focus = ps.txWindow.transactions
+					}
+					popup.visible = true
+					ps.focus = popup
+				case 1:
+					popup := ps.txWindow.popupInput
+					popup.buffer = strings.Join(ps.categories, ", ")
+					popup.callback = func(s string) {
+						ps.categories = []string{}
+						if len(strings.TrimSpace(s)) > 0 {
+							for _, category := range strings.Split(s, ",") {
+								ps.categories = append(ps.categories, strings.TrimSpace(category))
+							}
+						}
+						ps.Load()
+					}
+					popup.close = func() {
+						ps.focus = ps.txWindow.transactions
+					}
+					popup.visible = true
+					ps.focus = popup
+				case 2:
+					popup := ps.txWindow.popupInput
+					popup.buffer = ps.regex.String()
+					popup.callback = func(s string) {
+						ps.regex = regexp.MustCompile(s)
+						ps.Load()
+					}
+					popup.close = func() {
+						ps.focus = ps.txWindow.transactions
+					}
+					popup.visible = true
+					ps.focus = popup
+				}
+			},
 		},
 		debug: &UITable{
 			title: "Debug",
 			rows:  func() []string { return []string{} },
+		},
+		popupInput: &UIPopupInput{
+			w: 60,
+			h: 5,
 		},
 	}
 
 	ps.txWindow.parent = ps
 	ps.txWindow.root = ps
 
+	ps.txWindow.popupInput.parent = ps.txWindow
 	for _, elem := range []*UITable{ps.txWindow.transactions, ps.txWindow.categories, ps.txWindow.criteria, ps.txWindow.debug} {
 		elem.parent = ps.txWindow
 		elem.root = ps
@@ -486,14 +556,6 @@ func (ps *PennyScreen) Display() {
 						break
 					}
 				}
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case _ = <-ps.results:
 			}
 		}
 	}()
@@ -563,4 +625,57 @@ func (ps *PennyScreen) Handle(ev tcell.Event) bool {
 		ps.screen.Sync()
 	}
 	return false
+}
+
+func ParseDateRange(s string) (time.Time, time.Time, error) {
+	var start, end time.Time
+	var err error
+
+	re := regexp.MustCompile(`(\d\d\/\d\d\/\d\d\d\d)\s+\-\s+(\d\d\/\d\d\/\d\d\d\d)`)
+	m := re.FindAllStringSubmatch(s, -1)
+	if len(m) > 0 {
+		start, err = time.Parse("01/02/2006", m[0][1])
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		end, err = time.Parse("01/02/2006", m[0][2])
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		return start, end, nil
+	}
+
+	re = regexp.MustCompile(`[Qq](\d)\s*(\d{4})`)
+	m = re.FindAllStringSubmatch(s, -1)
+	if len(m) > 0 {
+		q := m[0][1]
+		y := m[0][2]
+		var s, e string
+		switch q {
+		case "1":
+			s = "01/01"
+			e = "03/31"
+		case "2":
+			s = "04/01"
+			e = "06/30"
+		case "3":
+			s = "07/01"
+			e = "09/30"
+		case "4":
+			s = "10/01"
+			e = "12/31"
+		}
+
+		start, err = time.Parse("01/02/2006", fmt.Sprintf("%s/%s", s, y))
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		end, err = time.Parse("01/02/2006", fmt.Sprintf("%s/%s", e, y))
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		return start, end, nil
+	}
+
+	return time.Time{}, time.Time{}, fmt.Errorf("Invalid date range: " + s)
 }
