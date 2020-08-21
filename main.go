@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/gdamore/tcell"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"io/ioutil"
 	"os"
@@ -11,6 +12,15 @@ import (
 	"strings"
 	"time"
 )
+
+type PennyCLI struct {
+	Verbose    bool
+	DbPath     string
+	Start      time.Time
+	End        time.Time
+	Categories []string
+	Regex      *regexp.Regexp
+}
 
 func main() {
 	defaultStart := time.Now().Add(-365 * 24 * time.Hour).Format("01/02/2006")
@@ -26,8 +36,11 @@ func main() {
 		regexString    = app.Flag("regex", "Filter by regular expression").String()
 		list           = app.Command("list", "List transactions")
 		edit           = app.Command("edit", "Edit transactions")
+		ui             = app.Command("ui", "Launch terminal based UI")
 		importCmd      = app.Command("import", "Import transactions from raw CSV exports")
 		markPayoffsCmd = app.Command("mark-payoffs", "Mark transactions that cancel each other into the 'payoffs' category")
+		summary        = app.Command("summary", "Year summary")
+		summary_year   = app.Flag("year", "Year").Int()
 		decryptCmd     = app.Command("decrypt", "Decrypt a file")
 		encryptCmd     = app.Command("encrypt", "Encrypt a file")
 	)
@@ -50,13 +63,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
+
+	switch command {
+	case encryptCmd.FullCommand():
+		contents, err := ioutil.ReadAll(os.Stdin)
+		check(err)
+		ciphertext, err := encrypt(key, contents)
+		check(err)
+		os.Stdout.Write(ciphertext)
+		return
+	}
+
 	regex := regexp.MustCompile(*regexString)
 	categoriesList := []string{}
 	if len(*categories) > 0 {
 		categoriesList = strings.Split(*categories, ",")
 	}
 
-	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
 	pdb, err := NewPennyDb(*db, log, key)
 	check(err)
 
@@ -124,6 +148,23 @@ func main() {
 		slice.WriteHumanReadableTable(os.Stdout)
 		fmt.Printf("\n\n")
 		slice.WriteHumanReadableTotals(os.Stdout)
+	case summary.FullCommand():
+		fmt.Printf("year: %d\n", *summary_year)
+		fmt.Printf("slice: %v\n", slice)
+	case ui.FullCommand():
+		tcell.SetEncodingFallback(tcell.EncodingFallbackASCII)
+		s, e := tcell.NewScreen()
+
+		if e != nil {
+			panic(e)
+		}
+
+		if e = s.Init(); e != nil {
+			panic(e)
+		}
+
+		ps := NewPennyScreen(s, pdb, startParsed, endParsed, regex, categoriesList)
+		ps.Display()
 	case edit.FullCommand():
 		tmpfile, err := ioutil.TempFile("", "")
 		check(err)
