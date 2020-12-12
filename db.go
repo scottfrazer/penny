@@ -5,14 +5,14 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"io/ioutil"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type dbExecFunc func(string, ...interface{}) (sql.Result, error)
@@ -117,15 +117,15 @@ func (pdb *PennyDb) SaveEditTsv(reader io.Reader) error {
 	return err
 }
 
-func (pdb *PennyDb) Slice(start, end time.Time, regex *regexp.Regexp, categories []string) *TxSlice {
+func (pdb *PennyDb) Slice(filter *Filter) *TxSlice {
 	pdb.mutex.RLock()
 	defer pdb.mutex.RUnlock()
 
 	var sliceTxs []*Transaction
 	for _, tx := range pdb.txCache {
-		if len(categories) > 0 {
+		if len(filter.Categories) > 0 {
 			found := false
-			for _, category := range categories {
+			for _, category := range filter.Categories {
 				if tx.Category == category || (category == "uncategorized" && len(tx.Category) == 0) {
 					found = true
 				}
@@ -135,11 +135,11 @@ func (pdb *PennyDb) Slice(start, end time.Time, regex *regexp.Regexp, categories
 			}
 		}
 
-		if regex != nil && !regex.MatchString(strings.Join(tx.TableRow(), " ")) {
+		if filter.Regex != nil && !filter.Regex.MatchString(strings.Join(tx.TableRow(), " ")) {
 			continue
 		}
 
-		if tx.Date.Equal(start) || tx.Date.Equal(end) || (tx.Date.After(start) && tx.Date.Before(end)) {
+		if tx.Date.Equal(filter.Start) || tx.Date.Equal(filter.End) || (tx.Date.After(filter.Start) && tx.Date.Before(filter.End)) {
 			sliceTxs = append(sliceTxs, tx)
 		}
 	}

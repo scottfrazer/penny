@@ -3,13 +3,12 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"gopkg.in/alecthomas/kingpin.v2"
 	"io/ioutil"
 	"os"
 	"os/exec"
-	"regexp"
-	"strings"
 	"time"
+
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 func main() {
@@ -30,6 +29,7 @@ func main() {
 		markPayoffsCmd = app.Command("mark-payoffs", "Mark transactions that cancel each other into the 'payoffs' category")
 		decryptCmd     = app.Command("decrypt", "Decrypt a file")
 		encryptCmd     = app.Command("encrypt", "Encrypt a file")
+		server         = app.Command("server", "Start Server")
 	)
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -38,29 +38,19 @@ func main() {
 		log = log.ToWriter(os.Stdout)
 	}
 
-	startParsed, err := time.Parse("01/02/2006", *start)
-	if err != nil {
-		fmt.Printf("Invalid start date %s: %s\n", *start, err)
-		os.Exit(1)
-	}
-
-	endParsed, err := time.Parse("01/02/2006", *end)
-	if err != nil {
-		fmt.Printf("Invalid end date %s: %s\n", *end, err)
-		os.Exit(1)
-	}
-
-	regex := regexp.MustCompile(*regexString)
-	categoriesList := []string{}
-	if len(*categories) > 0 {
-		categoriesList = strings.Split(*categories, ",")
-	}
-
 	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
 	pdb, err := NewPennyDb(*db, log, key)
 	check(err)
 
-	slice := pdb.Slice(startParsed, endParsed, regex, categoriesList)
+	filter, errors := ParseFilter(RawFilter{*categories, *regexString, *start, *end})
+	if len(errors) != 0 {
+		for k, v := range errors {
+			fmt.Fprintf(os.Stderr, "ERROR: %s: %s", k, v)
+		}
+		os.Exit(1)
+	}
+
+	slice := pdb.Slice(filter)
 
 	if len(slice.transactions) == 0 {
 		fmt.Printf("No transactions found\n")
@@ -68,6 +58,8 @@ func main() {
 	}
 
 	switch command {
+	case server.FullCommand():
+		PennyHTTPServer(":8090", pdb)
 	case markPayoffsCmd.FullCommand():
 		slice.MarkPayoffs(log)
 		tsv := slice.GetEditTsv()
