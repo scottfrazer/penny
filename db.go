@@ -22,12 +22,14 @@ type PennyDb struct {
 	secretKey       []byte
 	mutex           *sync.RWMutex
 	txCache         []*Transaction
+	investmentCache []*Investment
 	log             *Logger
 }
 
 type PennyDbHandle struct {
 	db              *sql.DB
 	pdb             *PennyDb
+	readOnly        bool
 	decryptedDbPath string
 }
 
@@ -36,20 +38,28 @@ func NewPennyDb(encryptedDbPath string, log *Logger, secretKey []byte) (*PennyDb
 		return nil, fmt.Errorf("Expecting a secret key length of 32 bytes")
 	}
 	var mutex sync.RWMutex
-	pdb := PennyDb{encryptedDbPath, secretKey, &mutex, nil, log}
+	pdb := PennyDb{encryptedDbPath, secretKey, &mutex, nil, nil, log}
 
-	handle, err := pdb.Open()
+	handle, err := pdb.OpenReadOnly()
 	if err != nil {
 		return nil, err
 	}
 	defer handle.Close()
 
 	pdb.txCache, err = handle.AllTransactions()
+	pdb.investmentCache, err = handle.AllInvestments()
+
 	if err != nil {
 		return nil, err
 	}
 
 	return &pdb, nil
+}
+
+func (pdb *PennyDb) AllInvestments() []*Investment {
+	pdb.mutex.RLock()
+	defer pdb.mutex.RUnlock()
+	return pdb.investmentCache
 }
 
 func (pdb *PennyDb) AllTransactions() []*Transaction {
@@ -58,11 +68,96 @@ func (pdb *PennyDb) AllTransactions() []*Transaction {
 	return pdb.txCache
 }
 
+type PennyDbCache struct {
+	table string
+	fetch func(string) string
+	pdb   *PennyDb
+}
+
+func (cache *PennyDbCache) Get(key string, ttl time.Duration) (string, error) {
+	handle, err := cache.pdb.OpenReadWrite()
+	if err != nil {
+		return "", err
+	}
+	defer handle.Close()
+
+	rows, err := handle.Query(fmt.Sprintf("SELECT value, date FROM %s WHERE key = ?", cache.table), key)
+	if err != nil {
+		return "", err
+	}
+
+	if rows.Next() {
+		var value string
+		var date time.Time
+		err = rows.Scan(&value, &date)
+		if err != nil {
+			return "", err
+		}
+
+		err = rows.Err()
+		if err != nil {
+			return "", err
+		}
+		expiresAt := date.Add(ttl)
+
+		if expiresAt.After(time.Now()) {
+			rows.Close()
+			return value, nil
+		}
+	}
+
+	rows.Close()
+
+	value := cache.fetch(key)
+
+	res, err := handle.Exec(
+		fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value, date) VALUES (?, ?, ?);`, cache.table),
+		key,
+		value,
+		time.Now(),
+	)
+
+	if err != nil {
+		return "", err
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+
+	if rowsAffected != 1 {
+		return "", errors.New(fmt.Sprintf("could not update key %s", key))
+	}
+
+	return value, nil
+}
+
+func (pdb *PennyDb) DBBackedCache(table string, fetch func(string) string) (*PennyDbCache, error) {
+	handle, err := pdb.OpenReadWrite()
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+
+	_, err = handle.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		key TEXT PRIMARY KEY,
+		value TEXT,
+		date DATETIME
+	);`, table))
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &PennyDbCache{table, fetch, pdb}, nil
+}
+
 func (pdb *PennyDb) WriteDecryptedDb(outfile string) error {
 	pdb.mutex.RLock()
 	defer pdb.mutex.RUnlock()
 
-	handle, err := pdb.Open()
+	handle, err := pdb.OpenReadWrite()
 	if err != nil {
 		return err
 	}
@@ -168,7 +263,7 @@ func (pdb *PennyDb) Update(transactions []*Transaction) error {
 	pdb.mutex.Lock()
 	defer pdb.mutex.Unlock()
 
-	handle, err := pdb.Open()
+	handle, err := pdb.OpenReadWrite()
 	if err != nil {
 		return err
 	}
@@ -210,7 +305,7 @@ func (pdb *PennyDb) Insert(transactions []*Transaction) error {
 	pdb.mutex.Lock()
 	defer pdb.mutex.Unlock()
 
-	handle, err := pdb.Open()
+	handle, err := pdb.OpenReadWrite()
 	if err != nil {
 		return err
 	}
@@ -264,73 +359,92 @@ func (pdb *PennyDb) Insert(transactions []*Transaction) error {
 	return nil
 }
 
-func (handle *PennyDbHandle) Close() error {
-	handle.db.Close()
+func (pdb *PennyDb) InsertInvestments(investments []*Investment) error {
+	pdb.mutex.Lock()
+	defer pdb.mutex.Unlock()
 
-	dbBytes, err := ioutil.ReadFile(handle.decryptedDbPath)
+	handle, err := pdb.OpenReadWrite()
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+
+	currentInvestments, err := handle.AllInvestments()
 	if err != nil {
 		return err
 	}
 
-	start := time.Now()
-	encryptedDbBytes, err := encrypt(handle.pdb.secretKey, dbBytes)
-	if err != nil {
-		return err
+	investmentFromId := make(map[string]*Investment)
+	for _, tx := range currentInvestments {
+		investmentFromId[tx.Id()] = tx
 	}
-	encryptTime := time.Since(start)
-	handle.pdb.log.Debug("encrypt contents of %s...  %s", handle.decryptedDbPath, encryptTime)
 
-	start = time.Now()
-	err = ioutil.WriteFile(handle.pdb.encryptedDbPath, encryptedDbBytes, 0664)
-	if err != nil {
-		return err
-	}
-	writeTime := time.Since(start)
-	handle.pdb.log.Debug("write encrypted sqlite3 db to %s...  %s", handle.pdb.encryptedDbPath, writeTime)
+	for _, investment := range investments {
+		if _, ok := investmentFromId[investment.Id()]; ok {
+			pdb.log.Info("Investment with ID %s already in database", investment.Id())
+			continue
+		}
 
-	err = os.Remove(handle.decryptedDbPath)
+		res, err := handle.Exec(
+			`INSERT INTO investment (account, date, type, symbol, shares, price, disambiguation) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			investment.Account,
+			investment.Date.Format("2006-01-02"),
+			investment.Type,
+			investment.Symbol,
+			investment.Shares,
+			investment.Price,
+			investment.Disambiguation)
+
+		if err != nil {
+			return err
+		}
+
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+
+		if rows != 1 {
+			return errors.New("could not insert into 'investment' table")
+		}
+	}
+
+	pdb.txCache, err = handle.AllTransactions()
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
-func (pdb *PennyDb) Open() (*PennyDbHandle, error) {
+func (pdb *PennyDb) GetTemporaryDirectory() (string, error) {
 	// Create temp file
 	tmpfile, err := ioutil.TempFile("", "pennydb")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	if _, err := os.Stat(pdb.encryptedDbPath); os.IsNotExist(err) {
 		// Encypted SQLite file does not exist
-
-		db, err := sql.Open("sqlite3", tmpfile.Name())
+		// TODO: is this case really needed?
+		_, err := sql.Open("sqlite3", tmpfile.Name())
 		if err != nil {
-			return nil, err
+			return "", err
 		}
-
-		handle := &PennyDbHandle{db, pdb, tmpfile.Name()}
-
-		err = handle.Setup()
-		if err != nil {
-			return nil, err
-		}
-
 	} else {
 		// Encrypted SQLite file does exist
 
 		// Load encrypted sqlite3 database into memory
 		encryptedDbBytes, err := ioutil.ReadFile(pdb.encryptedDbPath)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 
 		// Decrypt sqlite3 database
 		start := time.Now()
 		decryptedDbBytes, err := decrypt(pdb.secretKey, encryptedDbBytes)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		decryptTime := time.Since(start)
 		pdb.log.Debug("decrypt contents of %s...  %s (%d bytes)", pdb.encryptedDbPath, decryptTime, len(decryptedDbBytes))
@@ -339,19 +453,75 @@ func (pdb *PennyDb) Open() (*PennyDbHandle, error) {
 		start = time.Now()
 		err = ioutil.WriteFile(tmpfile.Name(), decryptedDbBytes, 0664)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		writeTime := time.Since(start)
 		pdb.log.Debug("write decrypted sqlite3 db to %s...  %s", tmpfile.Name(), writeTime)
 	}
 
+	return tmpfile.Name(), nil
+}
+
+func (pdb *PennyDb) OpenReadWrite() (*PennyDbHandle, error) {
+	return pdb.Open(false)
+}
+
+func (pdb *PennyDb) OpenReadOnly() (*PennyDbHandle, error) {
+	return pdb.Open(true)
+}
+
+func (pdb *PennyDb) Open(readOnly bool) (*PennyDbHandle, error) {
+	path, err := pdb.GetTemporaryDirectory()
+
 	// Get Database handle
-	db, err := sql.Open("sqlite3", tmpfile.Name())
+	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		return nil, err
 	}
 
-	return &PennyDbHandle{db, pdb, tmpfile.Name()}, nil
+	handle := &PennyDbHandle{db, pdb, readOnly, path}
+
+	err = handle.Setup()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return handle, nil
+}
+
+func (handle *PennyDbHandle) Close() error {
+	handle.db.Close()
+
+	// for read-only handles, don't save back the database
+	if !handle.readOnly {
+		dbBytes, err := ioutil.ReadFile(handle.decryptedDbPath)
+		if err != nil {
+			return err
+		}
+
+		start := time.Now()
+		encryptedDbBytes, err := encrypt(handle.pdb.secretKey, dbBytes)
+		if err != nil {
+			return err
+		}
+		encryptTime := time.Since(start)
+		handle.pdb.log.Debug("encrypt contents of %s...  %s", handle.decryptedDbPath, encryptTime)
+
+		start = time.Now()
+		err = ioutil.WriteFile(handle.pdb.encryptedDbPath, encryptedDbBytes, 0664)
+		if err != nil {
+			return err
+		}
+		writeTime := time.Since(start)
+		handle.pdb.log.Debug("write encrypted sqlite3 db to %s...  %s", handle.pdb.encryptedDbPath, writeTime)
+	}
+
+	err := os.Remove(handle.decryptedDbPath)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (handle *PennyDbHandle) Query(query string, args ...interface{}) (*sql.Rows, error) {
@@ -362,6 +532,44 @@ func (handle *PennyDbHandle) Query(query string, args ...interface{}) (*sql.Rows
 func (handle *PennyDbHandle) Exec(query string, args ...interface{}) (sql.Result, error) {
 	handle.pdb.log.DbQuery(query, args...)
 	return handle.db.Exec(query, args...)
+}
+
+func (handle *PennyDbHandle) AllInvestments() ([]*Investment, error) {
+	rows, err := handle.Query("SELECT account, date, type, symbol, shares, price, disambiguation FROM investment ORDER BY date, account, shares, price, disambiguation;")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var investments []*Investment
+	for rows.Next() {
+		var investment Investment
+		var date string
+		err = rows.Scan(
+			&investment.Account,
+			&date,
+			&investment.Type,
+			&investment.Symbol,
+			&investment.Shares,
+			&investment.Price,
+			&investment.Disambiguation,
+		)
+		if err != nil {
+			return nil, err
+		}
+		investment.Date, err = time.Parse("2006-01-02", date)
+		if err != nil {
+			return nil, err
+		}
+		investments = append(investments, &investment)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return nil, err
+	}
+
+	return investments, nil
 }
 
 func (handle *PennyDbHandle) AllTransactions() ([]*Transaction, error) {
@@ -425,6 +633,22 @@ func (handle *PennyDbHandle) Setup() error {
 			disambiguation TEXT,
 			category TEXT,
 			ignored INTEGER
+		);`)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	if !contains("investment", tables) {
+		_, err := handle.Exec(`CREATE TABLE investment (
+			account INTEGER,
+			date TEXT,
+			type TEXT,
+			symbol TEXT,
+			shares FLOAT,
+			price FLOAT,
+			disambiguation TEXT
 		);`)
 
 		if err != nil {

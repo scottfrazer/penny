@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -108,7 +109,7 @@ func TestDatabase(t *testing.T) {
 82d91ccd30,memo3,01/03/2018,$1.30,true,category3_new
 1fe6dfb8ab,memo4,01/04/2018,$1.40,false,category4
 `
-	err = pdb.SaveEditTsv([]byte(editTsv))
+	err = pdb.SaveEditTsv(bytes.NewReader([]byte(editTsv)))
 	fail(t, err)
 
 	assertTransactions(t, []*Transaction{&tx1_mod, &tx2_mod, &tx3_mod, &tx4}, pdb.AllTransactions())

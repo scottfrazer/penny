@@ -26,8 +26,8 @@ func TestImport(t *testing.T) {
 	dcu3ImportFile := `Transaction Number,Date,Description,Memo,Amount Debit,Amount Credit,Balance,Check Number,Fees  
 "1428104692",01/03/2018,"WITHDRAW","memo3",-1.3,,"998.7",,`
 
-	chaseImportFile := `Type,Trans Date,Post Date,Description,Amount
-Sale,01/04/2018,01/04/2018,memo4,-1.4`
+	chaseImportFile := `Transaction Date,Post Date,Description,Category,Type,Amount,Memo
+01/04/2018,01/04/2018,memo4,Food & Drink,Sale,-1.4,`
 
 	importer := NewTransactionImporter()
 	importer.ImportDCU("dcu", []byte(dcuImportFile))

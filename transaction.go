@@ -6,11 +6,13 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"
-	"github.com/olekukonko/tablewriter"
 	"io"
 	"math"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/olekukonko/tablewriter"
 )
 
 type Transaction struct {
@@ -292,12 +294,40 @@ func (slice *TxSlice) WriteHumanReadableTable(writer io.Writer) {
 
 func (slice *TxSlice) WriteHumanReadableTotals(writer io.Writer) {
 	elapsedDays := slice.ElapsedDays()
+	var income float64
+	var expenses float64
+	var investment float64
+
+	for _, tx := range slice.transactions {
+		if tx.Ignored && strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
+			investment += -tx.Amount
+			continue
+		}
+
+		if tx.Category == "payoff" || tx.Ignored == true {
+			continue
+		}
+
+		if tx.Category == "income" {
+			income += tx.Amount
+		} else {
+			expenses += tx.Amount
+		}
+	}
+
+	expensesMonthly := (expenses / elapsedDays) * 30.5
+	rate := (1 - (-(expenses / income))) * 100
 
 	table := tablewriter.NewWriter(writer)
 	table.Append([]string{"First Transaction", slice.transactions[0].Date.Format("01/02/2006")})
 	table.Append([]string{"Last Transaction", slice.transactions[len(slice.transactions)-1].Date.Format("01/02/2006")})
 	table.Append([]string{"Elapsed Days", fmt.Sprintf("%d", int(elapsedDays))})
 	table.Append([]string{"Transaction Count", fmt.Sprintf("%d", len(slice.transactions))})
+	table.Append([]string{"Income", money(income, true)})
+	table.Append([]string{"Expenses", money(expenses, true)})
+	table.Append([]string{"Montly Expenses", money(expensesMonthly, true)})
+	table.Append([]string{"Post-Tax Buy Investment", money(investment, true)})
+	table.Append([]string{"Savings Rate", fmt.Sprintf("%.1f%%", rate)})
 	table.Render()
 
 	io.WriteString(writer, "\n")

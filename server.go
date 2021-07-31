@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,24 +42,41 @@ func ParseFilter(raw RawFilter) (*Filter, map[string]string) {
 	}
 	filter.Regex = regex
 
-	if len(raw.Start) == 0 {
-		filter.Start = time.Now().Add(-365 * 24 * time.Hour)
-	} else {
-		parsed, err := time.Parse("01/02/2006", raw.Start)
-		if err != nil {
-			errors["start"] = fmt.Sprintf("Invalid date: %s (expecting format MM/DD/YYYY)", raw.Start)
-		}
-		filter.Start = parsed
+	quarterRegex, err := regexp.Compile("Q(\\d)(\\d{4})")
+	if err != nil {
+		errors["regex"] = err.Error()
 	}
 
-	if len(raw.End) == 0 {
-		filter.End = time.Now()
-	} else {
-		parsed, err := time.Parse("01/02/2006", raw.End)
+	quarterRegexMatch := quarterRegex.FindStringSubmatch(raw.Start)
+	if quarterRegexMatch != nil {
+		quarter, _ := strconv.ParseInt(quarterRegexMatch[1], 10, 16)
+		year, _ := strconv.ParseInt(quarterRegexMatch[2], 10, 16)
+		start, end, err := quarterToDateRange(int(quarter), int(year))
 		if err != nil {
-			errors["end"] = fmt.Sprintf("Invalid date: %s (expecting format MM/DD/YYYY)", raw.End)
+			errors["start"] = err.Error()
 		}
-		filter.End = parsed
+		filter.Start = start
+		filter.End = end
+	} else {
+		if len(raw.Start) == 0 {
+			filter.Start = time.Now().Add(-365 * 24 * time.Hour)
+		} else {
+			parsed, err := time.Parse("01/02/2006", raw.Start)
+			if err != nil {
+				errors["start"] = fmt.Sprintf("Invalid date: %s (expecting format MM/DD/YYYY)", raw.Start)
+			}
+			filter.Start = parsed
+		}
+
+		if len(raw.End) == 0 {
+			filter.End = time.Now()
+		} else {
+			parsed, err := time.Parse("01/02/2006", raw.End)
+			if err != nil {
+				errors["end"] = fmt.Sprintf("Invalid date: %s (expecting format MM/DD/YYYY)", raw.End)
+			}
+			filter.End = parsed
+		}
 	}
 
 	if len(errors) != 0 {
