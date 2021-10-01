@@ -39,7 +39,7 @@ func TestImport(t *testing.T) {
 	fail(t, err)
 	os.Remove(file.Name())
 
-	pdb, err := NewPennyDb(file.Name(), NewLogger().ToWriter(os.Stdout), []byte("01234567890123456789012345678901"))
+	pdb, err := NewPennyDb(file.Name(), NewLogger() /*.ToWriter(os.Stdout)*/, []byte("01234567890123456789012345678901"))
 	fail(t, err)
 
 	err = pdb.Insert(importer.All())

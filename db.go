@@ -2,10 +2,8 @@ package main
 
 import (
 	"database/sql"
-	"encoding/csv"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -176,42 +174,6 @@ func (pdb *PennyDb) WriteDecryptedDb(outfile string) error {
 	return nil
 }
 
-func (pdb *PennyDb) SaveEditTsv(reader io.Reader) error {
-	r := csv.NewReader(reader)
-	records, err := r.ReadAll()
-	if err != nil {
-		return err
-	}
-
-	txs := make(map[string]*Transaction)
-	for _, tx := range pdb.txCache {
-		txs[tx.Id()] = tx
-	}
-
-	var changed []*Transaction
-	for _, record := range records {
-		id := record[0]
-		ignore := false
-		if record[4] == "true" {
-			ignore = true
-		}
-		category := record[5]
-		if tx, ok := txs[id]; ok {
-			isChanged := tx.Category != category || tx.Ignored != ignore
-			if isChanged {
-				tx.Category = category
-				tx.Ignored = ignore
-				changed = append(changed, tx)
-			}
-		} else {
-			fmt.Printf("Error: cannot find id %s\n", id)
-		}
-	}
-
-	err = pdb.Update(changed)
-	return err
-}
-
 func (pdb *PennyDb) Slice(filter *Filter) *TxSlice {
 	pdb.mutex.RLock()
 	defer pdb.mutex.RUnlock()
@@ -238,13 +200,14 @@ func (pdb *PennyDb) Slice(filter *Filter) *TxSlice {
 			sliceTxs = append(sliceTxs, tx)
 		}
 	}
-	return &TxSlice{sliceTxs}
+
+	return &TxSlice{sliceTxs, pdb}
 }
 
 func (pdb *PennyDb) DefaultSlice() *TxSlice {
 	pdb.mutex.RLock()
 	defer pdb.mutex.RUnlock()
-	return &TxSlice{pdb.txCache}
+	return &TxSlice{pdb.txCache, pdb}
 }
 
 func (pdb *PennyDb) Start() time.Time {
@@ -290,7 +253,7 @@ func (pdb *PennyDb) Update(transactions []*Transaction) error {
 		}
 
 		if rows != 1 {
-			return errors.New(fmt.Sprintf("could not update transaction ID %s", tx.Id()))
+			return fmt.Errorf("could not update transaction ID %s", tx.Id())
 		}
 	}
 
@@ -417,7 +380,7 @@ func (pdb *PennyDb) InsertInvestments(investments []*Investment) error {
 	return nil
 }
 
-func (pdb *PennyDb) GetTemporaryDirectory() (string, error) {
+func (pdb *PennyDb) decryptDbToTempFile() (string, error) {
 	// Create temp file
 	tmpfile, err := ioutil.TempFile("", "pennydb")
 	if err != nil {
@@ -425,29 +388,26 @@ func (pdb *PennyDb) GetTemporaryDirectory() (string, error) {
 	}
 
 	if _, err := os.Stat(pdb.encryptedDbPath); os.IsNotExist(err) {
-		// Encypted SQLite file does not exist
-		// TODO: is this case really needed?
 		_, err := sql.Open("sqlite3", tmpfile.Name())
 		if err != nil {
 			return "", err
 		}
 	} else {
-		// Encrypted SQLite file does exist
-
 		// Load encrypted sqlite3 database into memory
+		start := time.Now()
 		encryptedDbBytes, err := ioutil.ReadFile(pdb.encryptedDbPath)
 		if err != nil {
 			return "", err
 		}
+		pdb.log.Debug("read %s...  %s (%d bytes)", pdb.encryptedDbPath, time.Since(start), len(encryptedDbBytes))
 
 		// Decrypt sqlite3 database
-		start := time.Now()
+		start = time.Now()
 		decryptedDbBytes, err := decrypt(pdb.secretKey, encryptedDbBytes)
 		if err != nil {
 			return "", err
 		}
-		decryptTime := time.Since(start)
-		pdb.log.Debug("decrypt contents of %s...  %s (%d bytes)", pdb.encryptedDbPath, decryptTime, len(decryptedDbBytes))
+		pdb.log.Debug("decrypt %s...  %s (%d bytes)", pdb.encryptedDbPath, time.Since(start), len(decryptedDbBytes))
 
 		// Write decrypted database to temp file
 		start = time.Now()
@@ -455,23 +415,22 @@ func (pdb *PennyDb) GetTemporaryDirectory() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		writeTime := time.Since(start)
-		pdb.log.Debug("write decrypted sqlite3 db to %s...  %s", tmpfile.Name(), writeTime)
+		pdb.log.Debug("write decrypted sqlite3 db to %s...  %s", tmpfile.Name(), time.Since(start))
 	}
 
 	return tmpfile.Name(), nil
 }
 
 func (pdb *PennyDb) OpenReadWrite() (*PennyDbHandle, error) {
-	return pdb.Open(false)
+	return pdb.open(false)
 }
 
 func (pdb *PennyDb) OpenReadOnly() (*PennyDbHandle, error) {
-	return pdb.Open(true)
+	return pdb.open(true)
 }
 
-func (pdb *PennyDb) Open(readOnly bool) (*PennyDbHandle, error) {
-	path, err := pdb.GetTemporaryDirectory()
+func (pdb *PennyDb) open(readOnly bool) (*PennyDbHandle, error) {
+	path, err := pdb.decryptDbToTempFile()
 
 	// Get Database handle
 	db, err := sql.Open("sqlite3", path)

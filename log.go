@@ -11,17 +11,15 @@ import (
 )
 
 type Logger struct {
-	prefix       string
-	writer       io.Writer
-	mutex        *sync.Mutex
-	wfLogsPath   string
-	callLogsPath string
-	logQueries   bool
+	prefix     string
+	writer     io.Writer
+	mutex      *sync.Mutex
+	logQueries bool
 }
 
 func NewLogger() *Logger {
 	var mutex sync.Mutex
-	return &Logger{"", ioutil.Discard, &mutex, "", "", true}
+	return &Logger{"", ioutil.Discard, &mutex, true}
 }
 
 func (log *Logger) ToFile(path string) *Logger {
@@ -35,7 +33,14 @@ func (log *Logger) ToFile(path string) *Logger {
 
 func (log *Logger) ToWriter(writer io.Writer) *Logger {
 	w := io.MultiWriter(log.writer, writer)
-	return &Logger{log.prefix, w, log.mutex, log.wfLogsPath, log.callLogsPath, log.logQueries}
+	return &Logger{log.prefix, w, log.mutex, log.logQueries}
+}
+
+func (log *Logger) Error(format string, args ...interface{}) {
+	log.mutex.Lock()
+	defer log.mutex.Unlock()
+	now := time.Now().Format("2006-01-02 15:04:05.999")
+	fmt.Fprintf(log.writer, "ERROR "+now+" "+log.prefix+fmt.Sprintf(format, args...)+"\n")
 }
 
 func (log *Logger) Info(format string, args ...interface{}) {

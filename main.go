@@ -7,7 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
-	"strings"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -20,7 +20,7 @@ func main() {
 	defaultEnd := time.Now().Format("01/02/2006")
 
 	var (
-		app            = kingpin.New("finance", "A command-line finance manager")
+		app            = kingpin.New("penny", "A command-line day manager")
 		verbose        = app.Flag("verbose", "Verbose output").Short('v').Bool()
 		db             = app.Flag("db", "Path to database file").Default("penny.sqlite3.encrypted").String()
 		start          = app.Flag("start", "Start date (MM/DD/YYYY)").Default(defaultStart).String()
@@ -33,9 +33,8 @@ func main() {
 		markPayoffsCmd = app.Command("mark-payoffs", "Mark transactions that cancel each other into the 'payoffs' category")
 		decryptCmd     = app.Command("decrypt", "Decrypt a file")
 		encryptCmd     = app.Command("encrypt", "Encrypt a file")
-		server         = app.Command("server", "Start Server")
 		report         = app.Command("report", "Generate Report")
-		investments    = app.Command("investments", "Investments")
+		investments    = app.Command("investments", "Show investment table")
 		sqlite         = app.Command("sqlite", "Get SQLite shell for database. CTRL-D to exit and save")
 	)
 
@@ -92,20 +91,10 @@ func main() {
 		os.Exit(0)
 	case report.FullCommand():
 		txs := pdb.AllTransactions()
-		firstMonth := txs[0].Date.Month()
-		firstYear := txs[0].Date.Year()
-		firstQuarter := monthToQuarter(int(firstMonth))
+		year := txs[0].Date.Year()
+		quarter := monthToQuarter(int(txs[0].Date.Month()))
 
-		quarter := firstQuarter
-		year := firstYear
-
-		type Quarter struct {
-			quarter int
-			year    int
-			slice   *TxSlice
-		}
-
-		var quarters []Quarter
+		var quarters Quarters
 
 		for {
 			start, end, err := quarterToDateRange(int(quarter), int(year))
@@ -119,11 +108,27 @@ func main() {
 
 			quarters = append(quarters, Quarter{quarter, year, slice})
 
-			quarter++
-			if quarter == 5 {
+			if quarter == 4 {
 				quarter = 1
 				year++
+			} else {
+				quarter++
 			}
+		}
+
+		avgExpenses := 0.0
+		for n := 0; n < 8; n++ {
+			avgExpenses += quarters[len(quarters)-n-1].Expenses()
+		}
+		avgExpenses = avgExpenses / 8
+
+		stockLookup, err := NewStockSymbolLookup(pdb)
+		check(err)
+		investmentTotal := 0.0
+		for _, investment := range pdb.AllInvestments() {
+			currentPrice, err := stockLookup.Get(investment.Symbol)
+			check(err)
+			investmentTotal += investment.Shares * currentPrice
 		}
 
 		writer := os.Stdout
@@ -133,71 +138,91 @@ func main() {
 			"Income",
 			"Expenses",
 			"Investments",
-			"Monthly Expenses",
 			"Savings Rate",
 		})
 
-		var savingsRateSum float64
-		var incomeSum float64
-		var expensesSum float64
-		var investmentSum float64
-		var expensesMonthlySum float64
-
 		for _, q := range quarters {
-			var income float64
-			var expenses float64
-			var investment float64
-
-			for _, tx := range q.slice.transactions {
-				if tx.Ignored && strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
-					investment += -tx.Amount
-					continue
-				}
-
-				if tx.Category == "payoff" || tx.Ignored == true {
-					continue
-				}
-
-				if tx.Category == "income" {
-					income += tx.Amount
-				} else {
-					expenses += tx.Amount
-				}
-			}
-
-			expensesMonthly := (expenses / q.slice.ElapsedDays()) * 30.0
-			rate := (1 - (-(expenses / income))) * 100
-
-			incomeSum += income
-			expensesSum += expenses
-			investmentSum += investment
-			expensesMonthlySum += expensesMonthly
-			savingsRateSum += rate
-
 			table.Append([]string{
 				fmt.Sprintf("Q%d %d", q.quarter, q.year),
-				money(income, true),
-				money(expenses, true),
-				money(investment, true),
-				money(expensesMonthly, true),
-				fmt.Sprintf("%.1f%%", rate),
+				money(q.Income(), true),
+				money(q.Expenses(), true),
+				money(q.Investments(), true),
+				fmt.Sprintf("%.1f%%", q.SavingsRate()),
 			})
 			if q.quarter == 4 {
-				table.Append([]string{"", "", "", "", "", ""})
+				table.Append([]string{"", "", "", "", ""})
 			}
 		}
 
-		size := float64(len(quarters))
 		table.SetFooter([]string{
 			"AVERAGE",
-			money(incomeSum/size, false),
-			money(expensesSum/size, false),
-			money(investmentSum/size, false),
-			money(expensesMonthlySum/size, false),
-			fmt.Sprintf("%.1f%%", savingsRateSum/float64(len(quarters))),
+			money(quarters.AvgIncome(), false),
+			money(quarters.AvgExpenses(), false),
+			money(quarters.AvgInvestments(), false),
+			fmt.Sprintf("%.1f%%", quarters.AvgSavingsRate()),
 		})
 		table.Render()
 		io.WriteString(writer, "\n")
+
+		life_expectancy := 90
+		ror := .07 // nominal
+		annual_contribution := 40000.0
+		ror_retirement := .05 // nominal
+		inflation := .03
+		expense_growth := func(year int) float64 {
+			return FV(inflation, float64(year-2021), 0, 100000.0, false)
+		}
+		// retirement_expense_function := func(year int) float64 {
+		// 	return 0.0
+		// }
+
+		investmentTotal += 124000.0
+		firecalc, err := pdb.DBBackedCache("firecalc_cache", func(s string) string {
+			var portfolio, expenses float64
+			var years int
+			_, err := fmt.Sscanf(s, "%f,%f,%d", &portfolio, &expenses, &years)
+			check(err)
+			successRate, _ := FIRECalc(portfolio, expenses, years)
+			return fmt.Sprintf("%.2f", successRate)
+		})
+		check(err)
+		firecalc_lookup := func(portfolio, expenses float64, years int) float64 {
+			key := fmt.Sprintf("%.2f,%.2f,%d", portfolio, -expenses, years)
+			value, _ := firecalc.Get(key, time.Minute*60*24*7)
+			v, _ := strconv.ParseFloat(value, 64)
+			return v
+		}
+
+		table = tablewriter.NewWriter(os.Stdout)
+		table.SetHeader([]string{
+			"Year",
+			"Age",
+			"Portfolio",
+			"Expenses",
+			"X% Rule",
+			"FIRECalc",
+			fmt.Sprintf("PMT @ %.1f%%", (ror_retirement-inflation)*100),
+		})
+		for year := 2021; year < (1985 + life_expectancy); year++ {
+			fv := FV(ror, float64(year-2021), -annual_contribution, -investmentTotal, false)
+			expenses := expense_growth(year)
+			age := year - 1985
+			retirement_length := life_expectancy - age
+			firecalc_success_rate := firecalc_lookup(fv, expenses, retirement_length)
+
+			pmt := PMT(ror_retirement-inflation, float64(retirement_length), fv, 0.0, false)
+
+			table.Append([]string{
+				fmt.Sprintf("%d", year),
+				fmt.Sprintf("%d", age),
+				money(fv, true),
+				money(expenses, true),
+				fmt.Sprintf("%.1f%%", (-expenses/fv)*100),
+				fmt.Sprintf("%.0f%%", firecalc_success_rate),
+				fmt.Sprintf("%.1f%%", (pmt/-expenses)*100),
+			})
+		}
+		table.Render()
 		os.Exit(0)
 	}
 
@@ -217,8 +242,6 @@ func main() {
 	}
 
 	switch command {
-	case server.FullCommand():
-		PennyHTTPServer(":8090", pdb)
 	case investments.FullCommand():
 		investments := pdb.AllInvestments()
 		cache, err := NewStockSymbolLookup(pdb)
@@ -296,12 +319,12 @@ func main() {
 		table.Render()
 	case markPayoffsCmd.FullCommand():
 		slice.MarkPayoffs(log)
-		tsv := slice.GetEditTsv()
+		tsv := slice.GetEditCsv()
 		// reload the slice
-		pdb2, err := NewPennyDb(*db, log, key)
-		check(err)
+		// pdb2, err := NewPennyDb(*db, log, key)
+		// check(err)
 		// apply the edits
-		check(pdb2.SaveEditTsv(bytes.NewReader(tsv)))
+		check(slice.SaveEditCsv(bytes.NewReader(tsv)))
 	case encryptCmd.FullCommand():
 		contents, err := ioutil.ReadAll(os.Stdin)
 		check(err)
@@ -352,15 +375,11 @@ func main() {
 			check(importer.ImportDCU("dcu3", dcu3CsvContents))
 		}
 
-		pdb.Insert(importer.All())
-		x := importer.AllInvestments()
-		for _, y := range x {
-			fmt.Printf("%v\n", y)
-		}
-		err = pdb.InsertInvestments(x)
-		if err != nil {
-			fmt.Println(err)
-		}
+		err = pdb.Insert(importer.All())
+		check(err)
+
+		err = pdb.InsertInvestments(importer.AllInvestments())
+		check(err)
 	case list.FullCommand():
 		slice.WriteHumanReadableTable(os.Stdout)
 		fmt.Printf("\n\n")
@@ -370,7 +389,7 @@ func main() {
 		check(err)
 		defer os.Remove(tmpfile.Name())
 
-		_, err = tmpfile.Write(slice.GetEditTsv())
+		_, err = tmpfile.Write(slice.GetEditCsv())
 		check(err)
 
 		err = tmpfile.Close()
@@ -384,6 +403,6 @@ func main() {
 
 		contents, err := ioutil.ReadFile(tmpfile.Name())
 		check(err)
-		pdb.SaveEditTsv(bytes.NewReader(contents))
+		slice.SaveEditCsv(bytes.NewReader(contents))
 	}
 }

@@ -7,6 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/leekchan/accounting"
@@ -139,4 +144,107 @@ func quarterToDateRange(quarter, year int) (time.Time, time.Time, error) {
 	}
 
 	return start, end, nil
+}
+
+func FV(rate, nper, pmt, pv float64, beginning bool) float64 {
+	return (-pv * math.Pow(1+rate, nper)) + (-pmt * (math.Pow(1+rate, nper) - 1) / rate)
+}
+
+func PMT(rate, nper, pv, fv float64, beginning bool) float64 {
+	return (pv * rate) / (1 - math.Pow(1+rate, -nper))
+}
+
+func FIRECalc(portfolio, expenses float64, years int) (float64, error) {
+	// POST https://www.firecalc.com/firecalcresults.php
+	//
+	// wdamt=175000&PortValue=5200000&term=35&callprocess2=Submit&ss1=0&ssy1=2034&ss2=0&ssy2=2036&signwd1=%2B&chwd1=0&chyr1=2024&wd1infl=adj&signwd2=%2B&chwd2=0&chyr2=2026&wd2infl=adj&signwd3=%2B&chwd3=0&chyr3=2030&wd3infl=adj&holdyears=2021&preadd=0&inflpick=4&override_inflation_rate=3.0&SpendingModel=constant&age=48%09&pctlastyear=0%09&infltype=PPI&fixedinc=Commercial+Paper&user_bonds=0&InvExp=0.18&monte=history&StartYr=1871&fixedchoice=LongInterest&pctEquity=75&mix1=+10+++&mix2=+10+++&mix3=+10+++&mix4=+40+++&mix5=+40+++&mix6=+10+++&mix7=+15+++&mix8=+5+++&user_bonds=4.0&user_inflation=3.0&monte_growth=10&monte_sd=10&monte_inflation=3.00&signlump1=%2B&cashin1=0&cashyr1=2024&signlump2=%2B&cashin2=0&cashyr2=2034&signlump3=%2B&cashin3=0&cashyr3=2039&process=survival&showyear=1960%09%09&delay=10&goal=95&portfloor=0&FIRECalcVersion=3.0
+
+	query := make(map[string]string)
+	query["wdamt"] = fmt.Sprintf("%.2f", expenses)
+	query["PortValue"] = fmt.Sprintf("%.2f", portfolio)
+	query["term"] = fmt.Sprintf("%d", years)
+	query["callprocess2"] = "Submit"
+	query["ss1"] = "0"
+	query["ssy1"] = "2034"
+	query["ss2"] = "0"
+	query["ssy2"] = "2036"
+	query["signwd1"] = "+"
+	query["chwd1"] = "0"
+	query["chyr1"] = "2024"
+	query["wd1infl"] = "adj"
+	query["signwd2"] = "+"
+	query["chwd2"] = "0"
+	query["chyr2"] = "2026"
+	query["wd2infl"] = "adj"
+	query["signwd3"] = "+"
+	query["chwd3"] = "0"
+	query["chyr3"] = "2030"
+	query["wd3infl"] = "adj"
+	query["holdyears"] = "2021"
+	query["preadd"] = "0"
+	query["inflpick"] = "4"
+	query["override_inflation_rate"] = "3.0"
+	query["SpendingModel"] = "constant"
+	query["age"] = "48\t"
+	query["pctlastyear"] = "0\t"
+	query["infltype"] = "PPI"
+	query["fixedinc"] = "Commercial+Paper"
+	query["user_bonds"] = "4.0"
+	query["InvExp"] = "0.18"
+	query["monte"] = "history"
+	query["StartYr"] = "1871"
+	query["fixedchoice"] = "LongInterest"
+	query["pctEquity"] = "75"
+	query["mix1"] = "+10+++"
+	query["mix2"] = "+10+++"
+	query["mix3"] = "+10+++"
+	query["mix4"] = "+40+++"
+	query["mix5"] = "+40+++"
+	query["mix6"] = "+10+++"
+	query["mix7"] = "+15+++"
+	query["mix8"] = "+5+++"
+	query["user_inflation"] = "3.0"
+	query["monte_growth"] = "10"
+	query["monte_sd"] = "10"
+	query["monte_inflation"] = "3.00"
+	query["signlump1"] = "+"
+	query["cashin1"] = "0"
+	query["cashyr1"] = "2024"
+	query["signlump2"] = "+"
+	query["cashin2"] = "0"
+	query["cashyr2"] = "2034"
+	query["signlump3"] = "+"
+	query["cashin3"] = "0"
+	query["cashyr3"] = "2039"
+	query["process"] = "survival"
+	query["showyear"] = "1960\t\t"
+	query["delay"] = "10"
+	query["goal"] = "95"
+	query["portfloor"] = "0"
+	query["FIRECalcVersion"] = "3.0"
+
+	// alt: url.Values{"key": {"Value"}, "id": {"123"}}
+	params := url.Values{}
+	for key, value := range query {
+		params.Add(key, value)
+	}
+
+	//fmt.Printf("POST https://www.firecalc.com/firecalcresults.php\n")
+	//fmt.Printf("PARAMS: %s\n", params.Encode())
+	resp, err := http.PostForm("https://www.firecalc.com/firecalcresults.php", params)
+	check(err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+
+	check(err)
+	//fmt.Println(string(body))
+
+	r := regexp.MustCompile(`FIRECalc found that (\d+) cycles failed, for a success rate of\s+([\d\.]+)%`)
+	m := r.FindStringSubmatch(string(body))
+	//fmt.Printf("!!!!!!! m = %v\n", m)
+	failedCycles, _ := strconv.Atoi(m[1])
+	_ = failedCycles
+	successRate, _ := strconv.ParseFloat(m[2], 64)
+	fmt.Println(successRate)
+	return successRate, nil
 }

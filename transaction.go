@@ -16,13 +16,16 @@ import (
 )
 
 type Transaction struct {
+	// The following fields are immutable
 	Source         string
 	Date           time.Time
 	Memo           string
 	Amount         float64
 	Disambiguation string
-	Category       string
-	Ignored        bool
+
+	// The following fields are set by users
+	Category string
+	Ignored  bool
 }
 
 type TransactionDateSort []*Transaction
@@ -43,6 +46,13 @@ func (tds TransactionDateSort) Less(i, j int) bool {
 	} else {
 		panic(fmt.Sprintf("Two transactions are equal: %s %s", tds[i], tds[j]))
 	}
+}
+
+func (tx *Transaction) Equals(other *Transaction) bool {
+	return tx.Id() == other.Id() &&
+		tx.Category == other.Category &&
+		tx.Ignored == other.Ignored &&
+		tx.Source == other.Source
 }
 
 func (tx *Transaction) Id() string {
@@ -78,6 +88,7 @@ func (tx *Transaction) CsvRow() []string {
 
 type TxSlice struct {
 	transactions []*Transaction // assume sorted
+	db           *PennyDb
 }
 
 func (slice *TxSlice) ElapsedDays() float64 {
@@ -112,40 +123,95 @@ func (slice *TxSlice) Total() float64 {
 }
 
 func (slice *TxSlice) MarkPayoffs(log *Logger) {
-	var matches = make(map[*Transaction]*Transaction)
+	priceToTxs := make(map[float64][]*Transaction)
 	for _, tx := range slice.transactions {
-		if tx.Category != "" {
-			continue
+		priceToTxs[tx.Amount] = append(priceToTxs[tx.Amount], tx)
+	}
+
+	findMatching := func(tx *Transaction) *Transaction {
+		inverseTxs := priceToTxs[-tx.Amount]
+
+		if len(inverseTxs) == 0 {
+			return nil
 		}
-		var candidates []*Transaction
-		for _, tx2 := range slice.transactions {
-			if tx2.Category != "" {
-				continue
+
+		for _, candidate := range inverseTxs {
+			if candidate.Category == "" {
+				if candidate.Date == tx.Date || candidate.Memo == tx.Memo {
+					return candidate
+				}
 			}
-			if tx.Amount+tx2.Amount == 0.0 {
-				candidates = append(candidates, tx2)
-			}
 		}
-		if len(candidates) > 1 {
-			log.Info("Transaction: %s has multiple candiates", tx.CsvRow())
-			continue
-		}
-		if len(candidates) == 1 {
-			tx2 := candidates[0]
-			if tx.Category == "" && tx2.Category == "" {
-				matches[tx] = tx2
-				matches[tx2] = tx
+
+		log.Error("ERROR: Could not find matching transaction: %v\n", tx)
+
+		return nil
+	}
+
+	for _, tx := range slice.transactions {
+		if tx.Amount < 0.0 {
+			matching := findMatching(tx)
+			if matching != nil {
 				tx.Category = "payoff"
-				tx2.Category = "payoff"
+				matching.Category = "payoff"
 			}
 		}
 	}
 }
 
-func (slice *TxSlice) GetEditTsv() []byte {
+func (slice *TxSlice) GetEditCsv() []byte {
+	b, _ := getEditCsv(slice.transactions)
+	return b
+}
+
+func (slice *TxSlice) SaveEditCsv(input io.Reader) error {
+	b, err := io.ReadAll(input)
+	if err != nil {
+		return err
+	}
+
+	txs, err := parseEditCsv(b, slice.transactions)
+	if err != nil {
+		return err
+	}
+
+	return slice.db.Update(txs)
+}
+
+// Returns only changed transactions
+func parseEditCsv(csvFile []byte, allTransactions []*Transaction) ([]*Transaction, error) {
+	records, err := csv.NewReader(bytes.NewReader(csvFile)).ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	txById := make(map[string]*Transaction)
+	for _, tx := range allTransactions {
+		txById[tx.Id()] = tx
+	}
+
+	var transactions []*Transaction
+	for _, record := range records {
+		id := record[0]
+		ignored := strings.ToLower(record[4]) == "true"
+		category := record[5]
+		if tx, ok := txById[id]; ok {
+			if tx.Category != category || tx.Ignored != ignored {
+				tx.Category = category
+				tx.Ignored = ignored
+				transactions = append(transactions, tx)
+			}
+		} else {
+			return nil, fmt.Errorf("Error: cannot find transaction %s", id)
+		}
+	}
+	return transactions, nil
+}
+
+func getEditCsv(transactions []*Transaction) ([]byte, error) {
 	var buf bytes.Buffer
 	writer := csv.NewWriter(&buf)
-	for _, tx := range slice.transactions {
+	for _, tx := range transactions {
 		row := []string{
 			tx.Id(),
 			tx.Memo,
@@ -158,8 +224,11 @@ func (slice *TxSlice) GetEditTsv() []byte {
 		check(err)
 	}
 	writer.Flush()
-	check(writer.Error())
-	return buf.Bytes()
+	return buf.Bytes(), writer.Error()
+}
+
+func (slice *TxSlice) Save(transactions []*Transaction) {
+
 }
 
 func (slice *TxSlice) Categories() []string {
@@ -365,4 +434,91 @@ func (slice *TxSlice) WriteHumanReadableTotals(writer io.Writer) {
 	table.Append(footer)
 
 	table.Render()
+}
+
+type Quarter struct {
+	quarter int
+	year    int
+	slice   *TxSlice
+}
+
+func (quarter Quarter) Income() float64 {
+	total := 0.0
+	for _, tx := range quarter.slice.transactions {
+		if tx.Category == "payoff" || tx.Ignored {
+			continue
+		}
+		if tx.Category == "income" {
+			total += tx.Amount
+		}
+	}
+	return total
+}
+
+func (quarter Quarter) Investments() float64 {
+	total := 0.0
+	for _, tx := range quarter.slice.transactions {
+		if strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
+			total += -tx.Amount
+		}
+	}
+	return total
+}
+
+func (quarter Quarter) Expenses() float64 {
+	total := 0.0
+	for _, tx := range quarter.slice.transactions {
+		if strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
+			continue
+		}
+		if tx.Category == "payoff" || tx.Ignored {
+			continue
+		}
+		if tx.Category != "income" {
+			total += tx.Amount
+		}
+	}
+	return total
+}
+
+func (quarter Quarter) SavingsRate() float64 {
+	return (1 - (-(quarter.Expenses() / quarter.Income()))) * 100
+}
+
+func (q Quarter) Slice() *TxSlice {
+	return q.slice
+}
+
+type Quarters []Quarter
+
+func (quarters Quarters) AvgIncome() float64 {
+	total := 0.0
+	for _, quarter := range quarters {
+		total += quarter.Income()
+	}
+	return total / float64(len(quarters))
+}
+
+func (quarters Quarters) AvgExpenses() float64 {
+	total := 0.0
+	for _, quarter := range quarters {
+		total += quarter.Expenses()
+	}
+	return total / float64(len(quarters))
+}
+
+func (quarters Quarters) AvgInvestments() float64 {
+	total := 0.0
+	for _, quarter := range quarters {
+		total += quarter.Investments()
+	}
+	return total / float64(len(quarters))
+}
+
+func (quarters Quarters) AvgSavingsRate() float64 {
+	total := 0.0
+	for _, quarter := range quarters {
+		total += quarter.SavingsRate()
+	}
+	return total / float64(len(quarters))
 }
