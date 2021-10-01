@@ -1,3 +1,9 @@
+# Penny
+
+Command-line personal finance manager.  Penny keeps track of every penny you have.
+
+## Setup
+
 ```
 export PENNY_SECRET_KEY='...'
 go build
