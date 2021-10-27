@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,58 @@ type Investment struct {
 	Shares         float64
 	Price          float64
 	Disambiguation string
+}
+
+type Holding struct {
+	Account     int64
+	Symbol      string
+	Investments []*Investment
+}
+
+type HoldingAccountAndSymbolSort []*Holding
+
+func (holdings HoldingAccountAndSymbolSort) Len() int {
+	return len(holdings)
+}
+
+func (holdings HoldingAccountAndSymbolSort) Swap(i, j int) {
+	holdings[i], holdings[j] = holdings[j], holdings[i]
+}
+
+func (holdings HoldingAccountAndSymbolSort) Less(i, j int) bool {
+	return strings.Compare(holdings[i].Key(), holdings[j].Key()) < 0
+}
+
+func (holding *Holding) Shares() float64 {
+	var total float64
+	for _, investment := range holding.Investments {
+		total += investment.Shares
+	}
+	return total
+}
+
+func (holding *Holding) PurchasePrice() float64 {
+	var total float64
+	for _, investment := range holding.Investments {
+		total += investment.Price * investment.Shares
+	}
+	return total
+}
+
+func (holding *Holding) CurrentPrice(lookup *StockSymbolLookup) (float64, error) {
+	var total float64
+	price, err := lookup.Get(holding.Symbol)
+	if err != nil {
+		return 0.0, err
+	}
+	for _, investment := range holding.Investments {
+		total += price * investment.Shares
+	}
+	return total, nil
+}
+
+func (holding *Holding) Key() string {
+	return fmt.Sprintf("%d-%s", holding.Account, holding.Symbol)
 }
 
 func (investment *Investment) Id() string {
@@ -38,6 +91,10 @@ func (investment *Investment) Id() string {
 }
 
 func lookupStockPrice(symbol string) (float64, error) {
+	if symbol == "401K" {
+		return 1.0, nil
+	}
+
 	type YahooFinanceResponse struct {
 		OptionChain struct {
 			Result []struct {

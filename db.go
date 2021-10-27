@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,7 @@ type PennyDbHandle struct {
 
 func NewPennyDb(encryptedDbPath string, log *Logger, secretKey []byte) (*PennyDb, error) {
 	if len(secretKey) != 32 {
-		return nil, fmt.Errorf("Expecting a secret key length of 32 bytes")
+		return nil, fmt.Errorf("expecting a secret key length of 32 bytes")
 	}
 	var mutex sync.RWMutex
 	pdb := PennyDb{encryptedDbPath, secretKey, &mutex, nil, nil, log}
@@ -45,6 +46,11 @@ func NewPennyDb(encryptedDbPath string, log *Logger, secretKey []byte) (*PennyDb
 	defer handle.Close()
 
 	pdb.txCache, err = handle.AllTransactions()
+
+	if err != nil {
+		return nil, err
+	}
+
 	pdb.investmentCache, err = handle.AllInvestments()
 
 	if err != nil {
@@ -58,6 +64,27 @@ func (pdb *PennyDb) AllInvestments() []*Investment {
 	pdb.mutex.RLock()
 	defer pdb.mutex.RUnlock()
 	return pdb.investmentCache
+}
+
+func (pdb *PennyDb) GroupedInvestments() []*Holding {
+	grouped := make(map[string]*Holding)
+	for _, investment := range pdb.AllInvestments() {
+		holding := &Holding{investment.Account, investment.Symbol, nil}
+		key := holding.Key()
+		if _, ok := grouped[key]; !ok {
+			grouped[key] = holding
+		}
+		grouped[key].Investments = append(grouped[key].Investments, investment)
+	}
+
+	var holdings []*Holding
+	for _, value := range grouped {
+		holdings = append(holdings, value)
+	}
+
+	sort.Sort(HoldingAccountAndSymbolSort(holdings))
+
+	return holdings
 }
 
 func (pdb *PennyDb) AllTransactions() []*Transaction {

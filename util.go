@@ -97,6 +97,13 @@ func decrypt(key, text []byte) ([]byte, error) {
 	return text, nil
 }
 
+func abs(x time.Duration) time.Duration {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 func monthToQuarter(month int) int {
 	if month >= 1 && month <= 3 {
 		return 1
@@ -229,22 +236,17 @@ func FIRECalc(portfolio, expenses float64, years int) (float64, error) {
 		params.Add(key, value)
 	}
 
-	//fmt.Printf("POST https://www.firecalc.com/firecalcresults.php\n")
-	//fmt.Printf("PARAMS: %s\n", params.Encode())
 	resp, err := http.PostForm("https://www.firecalc.com/firecalcresults.php", params)
 	check(err)
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 
 	check(err)
-	//fmt.Println(string(body))
 
 	r := regexp.MustCompile(`FIRECalc found that (\d+) cycles failed, for a success rate of\s+([\d\.]+)%`)
 	m := r.FindStringSubmatch(string(body))
-	//fmt.Printf("!!!!!!! m = %v\n", m)
 	failedCycles, _ := strconv.Atoi(m[1])
 	_ = failedCycles
 	successRate, _ := strconv.ParseFloat(m[2], 64)
-	fmt.Println(successRate)
 	return successRate, nil
 }

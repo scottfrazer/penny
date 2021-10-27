@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -93,6 +94,11 @@ func main() {
 		txs := pdb.AllTransactions()
 		year := txs[0].Date.Year()
 		quarter := monthToQuarter(int(txs[0].Date.Month()))
+		title := func(s string) string {
+			t := fmt.Sprintf("\n\n%s\n\n", strings.ToUpper(s))
+			fmt.Printf(t)
+			return t
+		}
 
 		var quarters Quarters
 
@@ -116,12 +122,6 @@ func main() {
 			}
 		}
 
-		avgExpenses := 0.0
-		for n := 0; n < 8; n++ {
-			avgExpenses += quarters[len(quarters)-n-1].Expenses()
-		}
-		avgExpenses = avgExpenses / 8
-
 		stockLookup, err := NewStockSymbolLookup(pdb)
 		check(err)
 		investmentTotal := 0.0
@@ -132,6 +132,12 @@ func main() {
 		}
 
 		writer := os.Stdout
+
+		////////////////////////////////////////////////////////////////////////////////////////////
+		//// QUARTERLY SUMMARY
+		////////////////////////////////////////////////////////////////////////////////////////////
+
+		title("Quarterly Summary")
 		table := tablewriter.NewWriter(writer)
 		table.SetHeader([]string{
 			"Quarter",
@@ -164,19 +170,94 @@ func main() {
 		table.Render()
 		io.WriteString(writer, "\n")
 
+		////////////////////////////////////////////////////////////////////////////////////////////
+		//// INVESTMENT SUMMARY
+		////////////////////////////////////////////////////////////////////////////////////////////
+
+		title("investments")
+		cache, err := NewStockSymbolLookup(pdb)
+		check(err)
+
+		accountNames, err := pdb.DBBackedCache("accounts_cache", func(s string) string {
+			name := "N/A"
+			switch s {
+			case "57103097":
+				name = "Traditional IRA (Deb)"
+			case "41535601":
+				name = "Traditional IRA (Deb)"
+			case "20405599":
+				name = "Roth (Deb)"
+			case "88939119":
+				name = "401k (Scott)"
+			case "32428283":
+				name = "Roth (Scott)"
+			case "49335127":
+				name = "Taxable (Scott+Deb)"
+			}
+			return name
+		})
+		check(err)
+
+		table = tablewriter.NewWriter(writer)
+		table.SetHeader([]string{
+			"Account",
+			"Account Name",
+			"Symbol",
+			"Shares",
+			"Purchase",
+			"Value",
+			"Profit",
+		})
+
+		var shares, purchase, value, profit float64
+		for _, holding := range pdb.GroupedInvestments() {
+			purchaseValue := holding.PurchasePrice()
+			currentValue, err := holding.CurrentPrice(cache)
+			check(err)
+
+			name, err := accountNames.Get(fmt.Sprintf("%d", holding.Account), time.Hour*24*7)
+			check(err)
+
+			shares += holding.Shares()
+			purchase += purchaseValue
+			value += currentValue
+			profit += (currentValue - purchaseValue)
+
+			table.Append([]string{
+				fmt.Sprintf("%d", holding.Account),
+				name,
+				holding.Symbol,
+				fmt.Sprintf("%.2f", holding.Shares()),
+				money(purchaseValue, true),
+				money(currentValue, true),
+				money(currentValue-purchaseValue, true),
+			})
+		}
+		table.SetFooter([]string{
+			"TOTAL",
+			"-",
+			"-",
+			fmt.Sprintf("%.2f", shares),
+			money(purchase, false),
+			money(value, false),
+			money(profit, false),
+		})
+		table.Render()
+
+		////////////////////////////////////////////////////////////////////////////////////////////
+		//// RETIREMENT TABLE
+		////////////////////////////////////////////////////////////////////////////////////////////
+
 		life_expectancy := 90
 		ror := .07 // nominal
 		annual_contribution := 40000.0
 		ror_retirement := .05 // nominal
 		inflation := .03
+		annual_expenses := -quarters.AvgExpenses() * 4
 		expense_growth := func(year int) float64 {
-			return FV(inflation, float64(year-2021), 0, 100000.0, false)
+			return FV(inflation, float64(year-2021), 0, annual_expenses, false)
 		}
-		// retirement_expense_function := func(year int) float64 {
-		// 	return 0.0
-		// }
 
-		investmentTotal += 124000.0
 		firecalc, err := pdb.DBBackedCache("firecalc_cache", func(s string) string {
 			var portfolio, expenses float64
 			var years int
@@ -193,7 +274,16 @@ func main() {
 			return v
 		}
 
-		table = tablewriter.NewWriter(os.Stdout)
+		title("retirement projection")
+		table = tablewriter.NewWriter(writer)
+		table.Append([]string{"Life Expectancy", fmt.Sprintf("%d", life_expectancy)})
+		table.Append([]string{"Nominal Rate of Return", fmt.Sprintf("%.2f%%", ror*100)})
+		table.Append([]string{"Retirement Rate of Return", fmt.Sprintf("%.2f%%", ror_retirement*100)})
+		table.Append([]string{"Inflation", fmt.Sprintf("%.2f%%", inflation*100)})
+		table.Append([]string{"Annual Contribution", money(annual_contribution, true)})
+		table.Render()
+
+		table = tablewriter.NewWriter(writer)
 		table.SetHeader([]string{
 			"Year",
 			"Age",
@@ -203,8 +293,12 @@ func main() {
 			"FIRECalc",
 			fmt.Sprintf("PMT @ %.1f%%", (ror_retirement-inflation)*100),
 		})
-		for year := 2021; year < (1985 + life_expectancy); year++ {
-			fv := FV(ror, float64(year-2021), -annual_contribution, -investmentTotal, false)
+
+		currentYear, err := strconv.Atoi(time.Now().Format("2006"))
+		check(err)
+
+		for year := currentYear; year < (1985 + life_expectancy); year++ {
+			fv := FV(ror, float64(year-currentYear), -annual_contribution, -investmentTotal, false)
 			expenses := expense_growth(year)
 			age := year - 1985
 			retirement_length := life_expectancy - age
@@ -260,7 +354,6 @@ func main() {
 			"Value",
 			"Profit",
 		})
-
 		for _, investment := range investments {
 			price, err := cache.Get(investment.Symbol)
 			check(err)
@@ -280,51 +373,8 @@ func main() {
 			})
 		}
 		table.Render()
-
-		grouped := make(map[string][]*Investment)
-		for _, investment := range investments {
-			group := fmt.Sprintf("%d-%s", investment.Account, investment.Symbol)
-			grouped[group] = append(grouped[group], investment)
-		}
-
-		table = tablewriter.NewWriter(writer)
-		table.SetHeader([]string{
-			"Account",
-			"Symbol",
-			"Shares",
-			"Purchase",
-			"Value",
-			"Profit",
-		})
-		for _, investments := range grouped {
-			var shares, purchase, value float64
-			account := investments[0].Account
-			symbol := investments[0].Symbol
-			price, err := cache.Get(symbol)
-			check(err)
-			for _, investment := range investments {
-				shares += investment.Shares
-				purchase += investment.Shares * investment.Price
-				value += investment.Shares * price
-			}
-			table.Append([]string{
-				fmt.Sprintf("%d", account),
-				symbol,
-				fmt.Sprintf("%.2f", shares),
-				money(purchase, true),
-				money(value, true),
-				money(value-purchase, true),
-			})
-		}
-		table.Render()
 	case markPayoffsCmd.FullCommand():
-		slice.MarkPayoffs(log)
-		tsv := slice.GetEditCsv()
-		// reload the slice
-		// pdb2, err := NewPennyDb(*db, log, key)
-		// check(err)
-		// apply the edits
-		check(slice.SaveEditCsv(bytes.NewReader(tsv)))
+		check(slice.SaveEditCsv(bytes.NewReader(slice.MarkPayoffs().GetEditCsv())))
 	case encryptCmd.FullCommand():
 		contents, err := ioutil.ReadAll(os.Stdin)
 		check(err)

@@ -48,6 +48,18 @@ func (tds TransactionDateSort) Less(i, j int) bool {
 	}
 }
 
+func (tx *Transaction) Copy() *Transaction {
+	return &Transaction{
+		tx.Source,
+		tx.Date,
+		tx.Memo,
+		tx.Amount,
+		tx.Disambiguation,
+		tx.Category,
+		tx.Ignored,
+	}
+}
+
 func (tx *Transaction) Equals(other *Transaction) bool {
 	return tx.Id() == other.Id() &&
 		tx.Category == other.Category &&
@@ -122,10 +134,19 @@ func (slice *TxSlice) Total() float64 {
 	return total
 }
 
-func (slice *TxSlice) MarkPayoffs(log *Logger) {
+func (slice *TxSlice) MarkPayoffs() *TxSlice {
 	priceToTxs := make(map[float64][]*Transaction)
 	for _, tx := range slice.transactions {
 		priceToTxs[tx.Amount] = append(priceToTxs[tx.Amount], tx)
+	}
+
+	remove := func(tx *Transaction) {
+		for i, e := range priceToTxs[tx.Amount] {
+			if e.Id() == tx.Id() {
+				priceToTxs[tx.Amount] = append(priceToTxs[tx.Amount][:i], priceToTxs[tx.Amount][i+1:]...)
+				return
+			}
+		}
 	}
 
 	findMatching := func(tx *Transaction) *Transaction {
@@ -137,26 +158,32 @@ func (slice *TxSlice) MarkPayoffs(log *Logger) {
 
 		for _, candidate := range inverseTxs {
 			if candidate.Category == "" {
-				if candidate.Date == tx.Date || candidate.Memo == tx.Memo {
+				timeBetweenTransactions := abs(tx.Date.Sub(candidate.Date))
+				if timeBetweenTransactions < time.Second*60*60*24*4 || candidate.Memo == tx.Memo {
 					return candidate
 				}
 			}
 		}
 
-		log.Error("ERROR: Could not find matching transaction: %v\n", tx)
-
 		return nil
 	}
 
-	for _, tx := range slice.transactions {
-		if tx.Amount < 0.0 {
-			matching := findMatching(tx)
+	var payoffs []*Transaction
+	for _, candidate := range slice.transactions {
+		if candidate.Amount < 0.0 {
+			matching := findMatching(candidate)
 			if matching != nil {
-				tx.Category = "payoff"
-				matching.Category = "payoff"
+				for _, tx := range []*Transaction{candidate, matching} {
+					copy := tx.Copy()
+					copy.Category = "payoff"
+					payoffs = append(payoffs, copy)
+					remove(tx)
+				}
 			}
 		}
 	}
+
+	return &TxSlice{payoffs, slice.db}
 }
 
 func (slice *TxSlice) GetEditCsv() []byte {
