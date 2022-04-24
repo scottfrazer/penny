@@ -17,14 +17,14 @@ func TestImport(t *testing.T) {
 	tx3 := Transaction{"dcu3", time3, "memo3", -1.3, "", "", false}
 	tx4 := Transaction{"chase", time4, "memo4", -1.4, "", "", false}
 
-	dcuImportFile := `Transaction Number,Date,Description,Memo,Amount Debit,Amount Credit,Balance,Check Number,Fees  
-"1428104690",01/01/2018,"WITHDRAW","memo",-1.1,,"998.9",,`
+	dcuImportFile := `"DATE","DESCRIPTION","AMOUNT","CURRENT BALANCE"
+"01/01/2018","memo","-1.1","998.9"`
 
-	dcu2ImportFile := `Transaction Number,Date,Description,Memo,Amount Debit,Amount Credit,Balance,Check Number,Fees  
-"1428104691",01/02/2018,"WITHDRAW","memo2",-1.2,,"998.8",,`
+	dcu2ImportFile := `"DATE","DESCRIPTION","AMOUNT","CURRENT BALANCE"
+"01/02/2018","memo2","-1.2","998.8"`
 
-	dcu3ImportFile := `Transaction Number,Date,Description,Memo,Amount Debit,Amount Credit,Balance,Check Number,Fees  
-"1428104692",01/03/2018,"WITHDRAW","memo3",-1.3,,"998.7",,`
+	dcu3ImportFile := `"DATE","DESCRIPTION","AMOUNT","CURRENT BALANCE"
+"01/03/2018","memo3","-1.3","998.7"`
 
 	chaseImportFile := `Transaction Date,Post Date,Description,Category,Type,Amount,Memo
 01/04/2018,01/04/2018,memo4,Food & Drink,Sale,-1.4,`

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -73,6 +74,79 @@ func TestDatabase(t *testing.T) {
 	fail(t, err)
 
 	assertTransactions(t, txs, []*Transaction{&tx2_mod, &tx3_mod})
+}
+
+func TestDbBackedCache(t *testing.T) {
+	dbPath := tempFilePath()
+	defer os.Remove(dbPath)
+
+	pdb, err := NewPennyDb(dbPath, NewLogger(), []byte("01234567890123456789012345678901"))
+	fail(t, err)
+
+	lookupFuncCalled := false
+
+	cache, err := pdb.DBBackedCache("cache_table", func(key string) (string, error) {
+		lookupFuncCalled = true
+		switch key {
+		case "a":
+			return "a_value", nil
+		case "b":
+			return "", fmt.Errorf("an error has occurred")
+		}
+		return "", nil
+	})
+	fail(t, err)
+
+	lookupFuncCalled = false
+	_, err = cache.Get("b")
+	if err == nil {
+		t.Fatalf("expecting error")
+	}
+	if lookupFuncCalled == false {
+		t.Fatalf("expected func to be called")
+	}
+
+	lookupFuncCalled = false
+	value, err := cache.Get("foo")
+	fail(t, err)
+	if value != "" {
+		t.Fatalf("expecting no value")
+	}
+	if lookupFuncCalled == false {
+		t.Fatalf("expected func to be called")
+	}
+
+	lookupFuncCalled = false
+	value, err = cache.Get("a")
+	fail(t, err)
+	if value != "a_value" {
+		t.Fatalf("expecting mapping of a -> a_value")
+	}
+	if lookupFuncCalled == false {
+		t.Fatalf("expected func to be called")
+	}
+
+	lookupFuncCalled = false
+	value, err = cache.GetWithTTL("a", time.Hour)
+	fail(t, err)
+	if value != "a_value" {
+		t.Fatalf("expecting mapping of a -> a_value")
+	}
+	if lookupFuncCalled == true {
+		t.Fatalf("expected lookup function to not be called")
+	}
+
+	time.Sleep(time.Millisecond * 500)
+
+	lookupFuncCalled = false
+	value, err = cache.GetWithTTL("a", time.Millisecond*200)
+	fail(t, err)
+	if value != "a_value" {
+		t.Fatalf("expecting mapping of a -> a_value")
+	}
+	if lookupFuncCalled == false {
+		t.Fatalf("expected func to be called")
+	}
 }
 
 func tempFilePath() string {

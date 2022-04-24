@@ -395,7 +395,7 @@ func (slice *TxSlice) WriteHumanReadableTotals(writer io.Writer) {
 	var investment float64
 
 	for _, tx := range slice.transactions {
-		if tx.Ignored && strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
+		if tx.Ignored && strings.Contains(tx.Memo, "VANGUARD BUY") {
 			investment += -tx.Amount
 			continue
 		}
@@ -485,7 +485,7 @@ func (quarter Quarter) Income() float64 {
 func (quarter Quarter) Investments() float64 {
 	total := 0.0
 	for _, tx := range quarter.slice.transactions {
-		if strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
+		if strings.Contains(tx.Memo, "VANGUARD BUY") {
 			total += -tx.Amount
 		}
 	}
@@ -495,7 +495,7 @@ func (quarter Quarter) Investments() float64 {
 func (quarter Quarter) Expenses() float64 {
 	total := 0.0
 	for _, tx := range quarter.slice.transactions {
-		if strings.Contains(tx.Memo, "VANGUARD BUY INVESTMENT") {
+		if strings.Contains(tx.Memo, "VANGUARD BUY") {
 			continue
 		}
 		if tx.Category == "payoff" || tx.Ignored {

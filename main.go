@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mitchellh/go-wordwrap"
 	"github.com/olekukonko/tablewriter"
 	"gopkg.in/alecthomas/kingpin.v2"
 )
@@ -37,6 +38,9 @@ func main() {
 		report         = app.Command("report", "Generate Report")
 		investments    = app.Command("investments", "Show investment table")
 		sqlite         = app.Command("sqlite", "Get SQLite shell for database. CTRL-D to exit and save")
+		journal        = app.Command("journal", "Journal")
+		journalEdit    = journal.Command("edit", "Edit today's entry")
+		journalShow    = journal.Command("show", "Show journal entry")
 	)
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -69,6 +73,46 @@ func main() {
 	check(err)
 
 	switch command {
+	case journalShow.FullCommand():
+		handle, err := pdb.OpenReadWrite()
+		check(err)
+		defer handle.Close()
+
+		entry, err := handle.JournalEntry()
+		check(err)
+
+		fmt.Println(wordwrap.WrapString(entry, 75))
+
+	case journalEdit.FullCommand():
+		handle, err := pdb.OpenReadWrite()
+		check(err)
+		defer handle.Close()
+
+		tmpfile, err := ioutil.TempFile("", "")
+		check(err)
+		defer os.Remove(tmpfile.Name())
+
+		entry, err := handle.JournalEntry()
+		check(err)
+
+		_, err = tmpfile.Write([]byte(entry))
+		check(err)
+
+		err = tmpfile.Close()
+		check(err)
+
+		cmd := exec.Command("vim", tmpfile.Name())
+		cmd.Stdout = os.Stdout
+		cmd.Stdin = os.Stdin
+		err = cmd.Run()
+		check(err)
+
+		contents, err := ioutil.ReadFile(tmpfile.Name())
+		check(err)
+
+		fmt.Printf("entry=%s\n", contents)
+		err = handle.SaveJournalEntry(time.Now(), string(contents))
+		check(err)
 	case sqlite.FullCommand():
 		handle, err := pdb.OpenReadWrite()
 		check(err)
@@ -178,8 +222,8 @@ func main() {
 		cache, err := NewStockSymbolLookup(pdb)
 		check(err)
 
-		accountNames, err := pdb.DBBackedCache("accounts_cache", func(s string) string {
-			name := "N/A"
+		accountNames, err := pdb.DBBackedCache("accounts_cache", func(s string) (string, error) {
+			name := ""
 			switch s {
 			case "57103097":
 				name = "Traditional IRA (Deb)"
@@ -194,7 +238,7 @@ func main() {
 			case "49335127":
 				name = "Taxable (Scott+Deb)"
 			}
-			return name
+			return name, nil
 		})
 		check(err)
 
@@ -215,7 +259,7 @@ func main() {
 			currentValue, err := holding.CurrentPrice(cache)
 			check(err)
 
-			name, err := accountNames.Get(fmt.Sprintf("%d", holding.Account), time.Hour*24*7)
+			name, err := accountNames.GetWithTTL(fmt.Sprintf("%d", holding.Account), time.Hour*24*7)
 			check(err)
 
 			shares += holding.Shares()
@@ -258,18 +302,20 @@ func main() {
 			return FV(inflation, float64(year-2021), 0, annual_expenses, false)
 		}
 
-		firecalc, err := pdb.DBBackedCache("firecalc_cache", func(s string) string {
+		firecalc, err := pdb.DBBackedCache("firecalc_cache", func(s string) (string, error) {
 			var portfolio, expenses float64
 			var years int
 			_, err := fmt.Sscanf(s, "%f,%f,%d", &portfolio, &expenses, &years)
-			check(err)
+			if err != nil {
+				return "", err
+			}
 			successRate, _ := FIRECalc(portfolio, expenses, years)
-			return fmt.Sprintf("%.2f", successRate)
+			return fmt.Sprintf("%.2f", successRate), nil
 		})
 		check(err)
 		firecalc_lookup := func(portfolio, expenses float64, years int) float64 {
 			key := fmt.Sprintf("%.2f,%.2f,%d", portfolio, -expenses, years)
-			value, _ := firecalc.Get(key, time.Minute*60*24*7)
+			value, _ := firecalc.GetWithTTL(key, time.Minute*60*24*7)
 			v, _ := strconv.ParseFloat(value, 64)
 			return v
 		}

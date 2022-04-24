@@ -161,33 +161,18 @@ func (importer *TransactionImporter) ImportDCU(source string, csvFileContents []
 			continue
 		}
 
-		memo := record[3]
-		if record[2] == "SH DRAFT" {
-			memo = fmt.Sprintf("Check #%s", record[7])
-		} else if record[2] == "DIVIDEND" {
-			memo = record[2]
-		} else if record[2] == "WITHDRAW" && len(memo) == 0 {
-			memo = record[2]
-		}
-
-		date, err := time.Parse("01/02/2006", record[1])
+		date, err := time.Parse("01/02/2006", record[0])
 		if err != nil {
 			return err
 		}
 
-		var amount float64
-		if len(record[4]) > 0 {
-			amount, err = strconv.ParseFloat(record[4], 64)
-			if err != nil {
-				return err
-			}
-		} else if len(record[5]) > 0 {
-			amount, err = strconv.ParseFloat(record[5], 64)
-			if err != nil {
-				return err
-			}
-		} else {
-			return fmt.Errorf("Invalid CSV")
+		memo := record[1]
+
+		amountStr := strings.Replace(record[2], ",", "", -1)
+		amountStr = strings.Replace(amountStr, "$", "", -1)
+		amount, err := strconv.ParseFloat(amountStr, 64)
+		if err != nil {
+			return err
 		}
 
 		importer.Add(&Transaction{source, date, memo, amount, "", "", false})

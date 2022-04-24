@@ -128,10 +128,12 @@ type StockSymbolLookup struct {
 }
 
 func NewStockSymbolLookup(pdb *PennyDb) (*StockSymbolLookup, error) {
-	cache, err := pdb.DBBackedCache("stocks", func(symbol string) string {
+	cache, err := pdb.DBBackedCache("stocks", func(symbol string) (string, error) {
 		price, err := lookupStockPrice(symbol)
-		check(err)
-		return fmt.Sprintf("%.2f", price)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("%.2f", price), nil
 	})
 
 	if err != nil {
@@ -142,7 +144,7 @@ func NewStockSymbolLookup(pdb *PennyDb) (*StockSymbolLookup, error) {
 }
 
 func (lookup *StockSymbolLookup) Get(symbol string) (float64, error) {
-	value, err := lookup.cache.Get(symbol, lookup.ttl)
+	value, err := lookup.cache.GetWithTTL(symbol, lookup.ttl)
 	if err != nil {
 		return 0, err
 	}

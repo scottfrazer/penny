@@ -95,11 +95,19 @@ func (pdb *PennyDb) AllTransactions() []*Transaction {
 
 type PennyDbCache struct {
 	table string
-	fetch func(string) string
+	fetch func(string) (string, error)
 	pdb   *PennyDb
 }
 
-func (cache *PennyDbCache) Get(key string, ttl time.Duration) (string, error) {
+// Get the value in the cache regardless of the TTL
+// If the key is not in the cache, an empty string is returned
+func (cache *PennyDbCache) Get(key string) (string, error) {
+	return cache.GetWithTTL(key, time.Duration(9223372036854775807))
+}
+
+// Returns the matched value only if it was retrieved before the TTL expires
+// If the key is not in the cache, an empty string is returned
+func (cache *PennyDbCache) GetWithTTL(key string, ttl time.Duration) (string, error) {
 	handle, err := cache.pdb.OpenReadWrite()
 	if err != nil {
 		return "", err
@@ -133,7 +141,11 @@ func (cache *PennyDbCache) Get(key string, ttl time.Duration) (string, error) {
 
 	rows.Close()
 
-	value := cache.fetch(key)
+	// cache miss - call the fetch function to compute the value
+	value, err := cache.fetch(key)
+	if err != nil {
+		return "", err
+	}
 
 	res, err := handle.Exec(
 		fmt.Sprintf(`INSERT OR REPLACE INTO %s (key, value, date) VALUES (?, ?, ?);`, cache.table),
@@ -158,7 +170,39 @@ func (cache *PennyDbCache) Get(key string, ttl time.Duration) (string, error) {
 	return value, nil
 }
 
-func (pdb *PennyDb) DBBackedCache(table string, fetch func(string) string) (*PennyDbCache, error) {
+// All() will return all values regardless of if they're expired or not
+func (cache *PennyDbCache) All() ([]string, error) {
+	handle, err := cache.pdb.OpenReadOnly()
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
+
+	rows, err := handle.Query(fmt.Sprintf("SELECT value, date FROM %s", cache.table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []string
+	if rows.Next() {
+		var value string
+		var date time.Time
+		err = rows.Scan(&value, &date)
+		if err != nil {
+			return nil, err
+		}
+
+		err = rows.Err()
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, value)
+	}
+	return results, nil
+}
+
+func (pdb *PennyDb) DBBackedCache(table string, fetch func(string) (string, error)) (*PennyDbCache, error) {
 	handle, err := pdb.OpenReadWrite()
 	if err != nil {
 		return nil, err
@@ -640,6 +684,51 @@ func (handle *PennyDbHandle) Setup() error {
 		if err != nil {
 			return err
 		}
+	}
+
+	if !contains("journal", tables) {
+		_, err := handle.Exec(`CREATE TABLE journal (
+			date TEXT,
+			entry TEXT
+		);`)
+
+		if err != nil {
+			return err
+		}
+
+		_, err = handle.Exec(`CREATE UNIQUE INDEX date_idx ON journal (date);`)
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// TODO: should be at PennyDb level
+func (handle *PennyDbHandle) JournalEntry() (string, error) {
+	today := time.Now().Format("01/02/2006")
+	row := handle.db.QueryRow(fmt.Sprintf("SELECT entry FROM journal WHERE date='%s'", today))
+	var entry string
+	err := row.Scan(&entry)
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	return entry, nil
+}
+
+func (handle *PennyDbHandle) SaveJournalEntry(date time.Time, entry string) error {
+	result, err := handle.db.Exec("REPLACE INTO journal (date, entry) VALUES (?, ?)", date.Format("01/02/2006"), entry)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return fmt.Errorf("%d rows affected", affected)
 	}
 	return nil
 }
