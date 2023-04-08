@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -37,27 +38,28 @@ func NewPennyDb(encryptedDbPath string, log *Logger, secretKey []byte) (*PennyDb
 		return nil, fmt.Errorf("expecting a secret key length of 32 bytes")
 	}
 	var mutex sync.RWMutex
-	pdb := PennyDb{encryptedDbPath, secretKey, &mutex, nil, nil, log}
+	return &PennyDb{encryptedDbPath, secretKey, &mutex, nil, nil, log}, nil
+}
 
+func (pdb *PennyDb) LoadCaches() error {
 	handle, err := pdb.OpenReadOnly()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer handle.Close()
-
 	pdb.txCache, err = handle.AllTransactions()
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	pdb.investmentCache, err = handle.AllInvestments()
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &pdb, nil
+	return nil
 }
 
 func (pdb *PennyDb) AllInvestments() []*Investment {
@@ -706,29 +708,94 @@ func (handle *PennyDbHandle) Setup() error {
 	return nil
 }
 
-// TODO: should be at PennyDb level
-func (handle *PennyDbHandle) JournalEntry() (string, error) {
-	today := time.Now().Format("01/02/2006")
-	row := handle.db.QueryRow(fmt.Sprintf("SELECT entry FROM journal WHERE date='%s'", today))
-	var entry string
-	err := row.Scan(&entry)
-	if err != nil && err != sql.ErrNoRows {
-		return "", err
-	}
-	return entry, nil
+type JournalEntry struct {
+	Date time.Time
+	Text string
 }
 
-func (handle *PennyDbHandle) SaveJournalEntry(date time.Time, entry string) error {
-	result, err := handle.db.Exec("REPLACE INTO journal (date, entry) VALUES (?, ?)", date.Format("01/02/2006"), entry)
+func (handle *PennyDbHandle) Migrate() error {
+	entries, err := handle.GetJournalEntries()
 	if err != nil {
 		return err
 	}
+
+	for _, entry := range entries {
+		textBase64 := base64.StdEncoding.EncodeToString([]byte(entry.Text))
+		err := handle.SaveJournalEntry(entry.Date, textBase64)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// TODO: should be at PennyDb level
+func (handle *PennyDbHandle) JournalEntry(day time.Time) (JournalEntry, error) {
+	row := handle.db.QueryRow(fmt.Sprintf("SELECT entry FROM journal WHERE date='%s'", day.Format("01/02/2006")))
+	var textBase64 string
+	err := row.Scan(&textBase64)
+	if err != nil && err != sql.ErrNoRows {
+		return JournalEntry{}, err
+	}
+	text, err := base64.StdEncoding.DecodeString(textBase64)
+	if err != nil && err != sql.ErrNoRows {
+		return JournalEntry{}, err
+	}
+	return JournalEntry{day, string(text)}, nil
+}
+
+func (handle *PennyDbHandle) SaveJournalEntry(date time.Time, text string) error {
+	result, err := handle.db.Exec(
+		"REPLACE INTO journal (date, entry) VALUES (?, ?)",
+		date.Format("01/02/2006"),
+		base64.StdEncoding.EncodeToString([]byte(text)),
+	)
+
+	if err != nil {
+		return err
+	}
+
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
+
 	if affected != 1 {
 		return fmt.Errorf("%d rows affected", affected)
 	}
 	return nil
+}
+
+func (handle *PennyDbHandle) GetJournalEntries() ([]JournalEntry, error) {
+	row, err := handle.db.Query("SELECT date, entry FROM journal")
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []JournalEntry
+	for row.Next() {
+		var (
+			dateString string
+			textBase64 string
+		)
+
+		err = row.Scan(&dateString, &textBase64)
+		if err != nil {
+			return nil, err
+		}
+
+		date, err := time.Parse("01/02/2006", dateString)
+		if err != nil {
+			return nil, err
+		}
+
+		text, err := base64.StdEncoding.DecodeString(textBase64)
+		if err != nil {
+			return nil, err
+		}
+
+		entries = append(entries, JournalEntry{date, string(text)})
+	}
+	return entries, nil
 }

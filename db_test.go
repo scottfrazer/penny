@@ -34,6 +34,8 @@ func TestDatabase(t *testing.T) {
 
 	pdb, err := NewPennyDb(dbPath, NewLogger(), []byte("01234567890123456789012345678901"))
 	fail(t, err)
+	err = pdb.LoadCaches()
+	fail(t, err)
 
 	tx1 := Transaction{"source", date("Jan 1 2018"), "memo", 1.1, "", "category1", false}
 	tx1_mod := Transaction{"source", date("Jan 1 2018"), "memo", 1.1, "", "category1_NEW", true}
@@ -81,6 +83,8 @@ func TestDbBackedCache(t *testing.T) {
 	defer os.Remove(dbPath)
 
 	pdb, err := NewPennyDb(dbPath, NewLogger(), []byte("01234567890123456789012345678901"))
+	fail(t, err)
+	err = pdb.LoadCaches()
 	fail(t, err)
 
 	lookupFuncCalled := false

@@ -41,6 +41,8 @@ func TestImport(t *testing.T) {
 
 	pdb, err := NewPennyDb(file.Name(), NewLogger() /*.ToWriter(os.Stdout)*/, []byte("01234567890123456789012345678901"))
 	fail(t, err)
+	err = pdb.LoadCaches()
+	fail(t, err)
 
 	err = pdb.Insert(importer.All())
 	fail(t, err)

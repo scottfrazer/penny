@@ -421,7 +421,7 @@ func (slice *TxSlice) WriteHumanReadableTotals(writer io.Writer) {
 	table.Append([]string{"Transaction Count", fmt.Sprintf("%d", len(slice.transactions))})
 	table.Append([]string{"Income", money(income, true)})
 	table.Append([]string{"Expenses", money(expenses, true)})
-	table.Append([]string{"Montly Expenses", money(expensesMonthly, true)})
+	table.Append([]string{"Monthly Expenses", money(expensesMonthly, true)})
 	table.Append([]string{"Post-Tax Buy Investment", money(investment, true)})
 	table.Append([]string{"Savings Rate", fmt.Sprintf("%.1f%%", rate)})
 	table.Render()

@@ -40,12 +40,20 @@ func main() {
 		sqlite         = app.Command("sqlite", "Get SQLite shell for database. CTRL-D to exit and save")
 		journal        = app.Command("journal", "Journal")
 		journalEdit    = journal.Command("edit", "Edit today's entry")
+		journalEditDay = journalEdit.Arg("editDay", "MM/DD/YYYY of day to edit").String()
 		journalShow    = journal.Command("show", "Show journal entry")
+		journalShowDay = journalShow.Arg("showDay", "MM/DD/YYYY of day to edit").String()
+		test           = app.Command("test", "test")
 	)
 
 	command := kingpin.MustParse(app.Parse(os.Args[1:]))
 
 	key := []byte(os.Getenv("PENNY_SECRET_KEY"))
+
+	log := NewLogger()
+	if *verbose {
+		log = log.ToWriter(os.Stdout)
+	}
 
 	switch command {
 	case encryptCmd.FullCommand():
@@ -62,58 +70,10 @@ func main() {
 		check(err)
 		os.Stdout.Write(plaintext)
 		os.Exit(0)
-	}
-
-	log := NewLogger()
-	if *verbose {
-		log = log.ToWriter(os.Stdout)
-	}
-
-	pdb, err := NewPennyDb(*db, log, key)
-	check(err)
-
-	switch command {
-	case journalShow.FullCommand():
-		handle, err := pdb.OpenReadWrite()
-		check(err)
-		defer handle.Close()
-
-		entry, err := handle.JournalEntry()
-		check(err)
-
-		fmt.Println(wordwrap.WrapString(entry, 75))
-
-	case journalEdit.FullCommand():
-		handle, err := pdb.OpenReadWrite()
-		check(err)
-		defer handle.Close()
-
-		tmpfile, err := ioutil.TempFile("", "")
-		check(err)
-		defer os.Remove(tmpfile.Name())
-
-		entry, err := handle.JournalEntry()
-		check(err)
-
-		_, err = tmpfile.Write([]byte(entry))
-		check(err)
-
-		err = tmpfile.Close()
-		check(err)
-
-		cmd := exec.Command("vim", tmpfile.Name())
-		cmd.Stdout = os.Stdout
-		cmd.Stdin = os.Stdin
-		err = cmd.Run()
-		check(err)
-
-		contents, err := ioutil.ReadFile(tmpfile.Name())
-		check(err)
-
-		fmt.Printf("entry=%s\n", contents)
-		err = handle.SaveJournalEntry(time.Now(), string(contents))
-		check(err)
 	case sqlite.FullCommand():
+		pdb, err := NewPennyDb(*db, log, key)
+		check(err)
+
 		handle, err := pdb.OpenReadWrite()
 		check(err)
 
@@ -134,6 +94,66 @@ func main() {
 
 		handle.Close()
 		os.Exit(0)
+	}
+
+	pdb, err := NewPennyDb(*db, log, key)
+	check(err)
+
+	err = pdb.LoadCaches()
+	check(err)
+
+	switch command {
+	case test.FullCommand():
+		fmt.Printf("test\n")
+	case journalShow.FullCommand():
+		day := time.Now()
+		if len(*journalShowDay) > 0 {
+			day, err = time.Parse("01/02/2006", *journalShowDay)
+			check(err)
+		}
+		handle, err := pdb.OpenReadWrite()
+		check(err)
+		defer handle.Close()
+
+		entry, err := handle.JournalEntry(day)
+		check(err)
+
+		fmt.Println(wordwrap.WrapString(entry.Text, 75))
+
+	case journalEdit.FullCommand():
+		day := time.Now()
+		if len(*journalEditDay) > 0 {
+			day, err = time.Parse("01/02/2006", *journalEditDay)
+			check(err)
+		}
+		handle, err := pdb.OpenReadWrite()
+		check(err)
+		defer handle.Close()
+
+		tmpfile, err := ioutil.TempFile("", "")
+		check(err)
+		defer os.Remove(tmpfile.Name())
+
+		entry, err := handle.JournalEntry(day)
+		check(err)
+
+		_, err = tmpfile.Write([]byte(entry.Text))
+		check(err)
+
+		err = tmpfile.Close()
+		check(err)
+
+		cmd := exec.Command("vim", tmpfile.Name())
+		cmd.Stdout = os.Stdout
+		cmd.Stdin = os.Stdin
+		err = cmd.Run()
+		check(err)
+
+		contents, err := ioutil.ReadFile(tmpfile.Name())
+		check(err)
+
+		err = handle.SaveJournalEntry(day, string(contents))
+		check(err)
 	case report.FullCommand():
 		txs := pdb.AllTransactions()
 		year := txs[0].Date.Year()

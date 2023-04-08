@@ -166,9 +166,9 @@ func (importer *TransactionImporter) ImportDCU(source string, csvFileContents []
 			return err
 		}
 
-		memo := record[1]
+		memo := record[2]
 
-		amountStr := strings.Replace(record[2], ",", "", -1)
+		amountStr := strings.Replace(record[3], ",", "", -1)
 		amountStr = strings.Replace(amountStr, "$", "", -1)
 		amount, err := strconv.ParseFloat(amountStr, 64)
 		if err != nil {
